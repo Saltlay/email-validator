@@ -1,45 +1,23 @@
-import streamlit as st
 import re
 import smtplib
 import dns.resolver
-import pandas as pd
+import csv
+from concurrent.futures import ThreadPoolExecutor
 
-# ------------------ Constants ------------------
-DISPOSABLE_DOMAINS = {"mailinator.com", "10minutemail.com", "guerrillamail.com", "trashmail.com", "tempmail.com", "yopmail.com"}
-ROLE_BASED_PREFIXES = {"admin", "support", "info", "sales", "contact", "webmaster", "help"}
-NICKNAME_MAP = {
-    "johnathan": "john", "jonathan": "john", "michael": "mike", "william": "will", "robert": "rob",
-    "richard": "rich", "joseph": "joe", "daniel": "dan", "stephen": "steve", "james": "jim",
-    "alexander": "alex", "nicholas": "nick", "charles": "charlie", "andrew": "andy"
+# -- Configs --
+DISPOSABLE_DOMAINS = {
+    "mailinator.com", "10minutemail.com", "guerrillamail.com",
+    "trashmail.com", "tempmail.com", "yopmail.com"
 }
-FROM_EMAIL = "check@yourdomain.com"
+ROLE_BASED_PREFIXES = {
+    "admin", "support", "info", "sales", "contact", "webmaster", "help"
+}
+FROM_EMAIL = "check@yourdomain.com"  # Replace with a real domain you own
+
+# DNS MX caching
 mx_cache = {}
 
-# ------------------ Utility Functions ------------------
-def clean_name(name):
-    return re.sub(r'\s+', '', name.strip().lower())
-
-def generate_nicknames(name):
-    return [name] + ([NICKNAME_MAP[name]] if name in NICKNAME_MAP else [])
-
-def generate_emails(first, middle, last, domain):
-    firsts = generate_nicknames(first)
-    middles = [middle] if middle else [""]
-    lasts = [last] if last else [""]
-    patterns = []
-
-    for f in firsts:
-        for m in middles:
-            for l in lasts:
-                combos = [
-                    f, l, f + l, f + "." + l, f + "_" + l,
-                    f[0] + l, f + l[0], f[0] + "." + l, f + m + l,
-                    l + f, l + "." + f, f + m + "." + l
-                ]
-                patterns.extend(filter(None, combos))
-    patterns = list(set(patterns))
-    return [f"{p}@{domain}" for p in patterns if domain]
-
+# --- Validators ---
 def is_valid_syntax(email):
     return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
 
@@ -67,6 +45,7 @@ def verify_smtp(email):
         domain = email.split('@')[1]
         mx_records = dns.resolver.resolve(domain, 'MX', lifetime=3)
         mx = str(mx_records[0].exchange)
+
         server = smtplib.SMTP(mx, timeout=5)
         server.helo("yourdomain.com")
         server.mail(FROM_EMAIL)
@@ -76,57 +55,61 @@ def verify_smtp(email):
     except:
         return False
 
+# --- Main Checker ---
 def validate_email(email):
     email = email.strip()
     result = {
         "Email": email,
-        "Syntax": "❌",
-        "MX": "❌",
-        "Disposable": "✅" if is_disposable(email) else "❌",
-        "Role-based": "✅" if is_role_based(email) else "❌",
-        "SMTP": "❌",
+        "Syntax Valid": False,
+        "MX Record": False,
+        "Disposable": False,
+        "Role-based": False,
+        "SMTP Valid": False,
         "Verdict": "❌ Invalid"
     }
-    if not is_valid_syntax(email): return result
-    result["Syntax"] = "✅"
+
+    if not is_valid_syntax(email):
+        return result
+    result["Syntax Valid"] = True
+
+    result["Disposable"] = is_disposable(email)
+    result["Role-based"] = is_role_based(email)
+
     domain = email.split('@')[1]
-    if has_mx_record(domain):
-        result["MX"] = "✅"
-        result["SMTP"] = "✅" if verify_smtp(email) else "❌"
-    if result["Syntax"] == "✅" and result["MX"] == "✅" and result["SMTP"] == "✅" and result["Disposable"] == "❌":
+    result["MX Record"] = has_mx_record(domain)
+
+    if result["MX Record"]:
+        result["SMTP Valid"] = verify_smtp(email)
+
+    if all([result["Syntax Valid"], result["MX Record"], result["SMTP Valid"]]) and not result["Disposable"]:
         result["Verdict"] = "✅ Valid"
+
     return result
 
-# ------------------ UI ------------------
-st.set_page_config(page_title="Email Permutator & Validator", layout="wide")
-st.title("📧 Email Permutator & Validator")
-st.markdown("Enter name and domain to generate & validate emails.")
+# --- Run and Print ---
+def run_bulk_checker(emails):
+    print("🔍 Validating emails...\n")
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(validate_email, emails))
 
-with st.form("input_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        full_name = st.text_input("👤 Full Name (First Middle Last)", placeholder="e.g. John Michael Doe")
-    with col2:
-        domain = st.text_input("🌐 Domain or Website", placeholder="e.g. example.com or www.example.com")
-    submit = st.form_submit_button("🚀 Generate & Validate")
+    # Print nicely
+    print(f"{'Email':<40} | Syntax | MX | SMTP | Disposable | Role | Verdict")
+    print("-" * 95)
+    for r in results:
+        print(f"{r['Email']:<40} |   {str(r['Syntax Valid'])[0]}   | {str(r['MX Record'])[0]} |  {str(r['SMTP Valid'])[0]}   |     {str(r['Disposable'])[0]}      |  {str(r['Role-based'])[0]}  | {r['Verdict']}")
 
-if submit:
-    name_parts = clean_name(full_name).split()
-    first = name_parts[0] if len(name_parts) > 0 else ""
-    middle = name_parts[1] if len(name_parts) == 3 else ""
-    last = name_parts[-1] if len(name_parts) > 1 else ""
+    # Save to CSV
+    with open("results.csv", mode='w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=list(results[0].keys()))
+        writer.writeheader()
+        writer.writerows(results)
 
-    domain = domain.lower().replace("https://", "").replace("http://", "").replace("www.", "").strip().split('/')[0]
+    print("\n✅ Done! Results saved to: results.csv")
 
-    if not first or not domain:
-        st.error("❗ Please enter both a valid name and domain.")
-    else:
-        with st.spinner("⏳ Generating and validating emails..."):
-            emails = generate_emails(first, middle, last, domain)
-            results = [validate_email(e) for e in emails]
-            df = pd.DataFrame(results)
-            st.success(f"✅ Done! {len(results)} permutations checked.")
-            st.dataframe(df)
+# --- CLI Input ---
+if __name__ == "__main__":
+    print("📥 Enter email addresses (comma or newline separated):")
+    raw_input = input("> ").strip()
+    emails = [e.strip() for e in raw_input.replace(',', '\n').split('\n') if e.strip()]
 
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download CSV", data=csv, file_name="email_results.csv", mime="text/csv")
+    run_bulk_checker(emails)
