@@ -1,7 +1,11 @@
+# Create a Streamlit-compatible version of the email validator app
+
+streamlit_code = '''
 import re
 import smtplib
 import dns.resolver
-import csv
+import pandas as pd
+import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
 
 # -- Configs --
@@ -19,7 +23,7 @@ mx_cache = {}
 
 # --- Validators ---
 def is_valid_syntax(email):
-    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
+    return re.match(r"^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$", email) is not None
 
 def is_disposable(email):
     domain = email.split('@')[1].lower()
@@ -86,29 +90,30 @@ def validate_email(email):
 
     return result
 
-# --- Run and Print ---
-def run_bulk_checker(emails):
-    print("🔍 Validating emails...\n")
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(validate_email, emails))
+# --- Streamlit UI ---
+st.set_page_config(page_title="Email Validator", page_icon="✅")
+st.title("📧 Email Validator Tool")
+st.write("Enter a list of email addresses separated by commas or newlines:")
 
-    # Print nicely
-    print(f"{'Email':<40} | Syntax | MX | SMTP | Disposable | Role | Verdict")
-    print("-" * 95)
-    for r in results:
-        print(f"{r['Email']:<40} |   {str(r['Syntax Valid'])[0]}   | {str(r['MX Record'])[0]} |  {str(r['SMTP Valid'])[0]}   |     {str(r['Disposable'])[0]}      |  {str(r['Role-based'])[0]}  | {r['Verdict']}")
+user_input = st.text_area("Emails", height=200)
 
-    # Save to CSV
-    with open("results.csv", mode='w', newline='') as file:
-        writer = csv.DictWriter(file, fieldnames=list(results[0].keys()))
-        writer.writeheader()
-        writer.writerows(results)
+if st.button("Validate"):
+    emails = [e.strip() for e in user_input.replace(',', '\\n').split('\\n') if e.strip()]
+    if not emails:
+        st.warning("Please enter at least one email address.")
+    else:
+        with st.spinner("Validating emails..."):
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                results = list(executor.map(validate_email, emails))
+            df = pd.DataFrame(results)
+            st.success("Validation complete!")
+            st.dataframe(df)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download CSV", data=csv, file_name="results.csv", mime="text/csv")
+'''
 
-    print("\n✅ Done! Results saved to: results.csv")
+# Save to a file
+with open("/mnt/data/streamlit_email_validator.py", "w") as f:
+    f.write(streamlit_code.strip())
 
-# --- CLI Input ---
-if __name__ == "__main__":
-    print("📥 Enter email addresses (comma or newline separated):")
-    raw_input = input("> ").strip()
-    emails = [e.strip() for e in raw_input.replace(',', '\n').split('\n') if e.strip()]
-    run_bulk_checker(emails)
+"/mnt/data/streamlit_email_validator.py"
