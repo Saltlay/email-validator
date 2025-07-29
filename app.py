@@ -12,11 +12,11 @@ import yagmail
 import time
 
 # --- Configs ---
-DEFAULT_DISPOSABLE_DOMAINS = {
+DISPOSABLE_DOMAINS = {
     "mailinator.com", "10minutemail.com", "guerrillamail.com",
     "trashmail.com", "tempmail.com", "yopmail.com"
 }
-DEFAULT_ROLE_BASED_PREFIXES = {
+ROLE_BASED_PREFIXES = {
     "admin", "support", "info", "sales", "contact", "webmaster", "help"
 }
 DEFAULT_FROM_EMAIL = "check@yourdomain.com"
@@ -67,7 +67,7 @@ def has_mx_record(registrable_domain):
         return mx_cache[registrable_domain]
     try:
         answers = dns.resolver.resolve(registrable_domain, 'MX', 'IN', lifetime=3)
-        mx_cache[registrable_domain] = len(answers) > 0
+        mx_cache[registgable_domain] = len(answers) > 0
         return mx_cache[registrable_domain]
     except Exception:
         mx_cache[registrable_domain] = False
@@ -232,7 +232,7 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
         
         return False, f"Failed to send email: An unexpected error occurred: {error_message}"
 
-# --- New Module: Email Permutator (UPDATED to return raw list for validation) ---
+# --- Email Permutator (UPDATED to return raw list for validation) ---
 def generate_email_permutations_raw(first_name, last_name, domain, nickname=None):
     """
     Generates common email address permutations for a given name and domain.
@@ -247,49 +247,37 @@ def generate_email_permutations_raw(first_name, last_name, domain, nickname=None
     last_initial = last[0] if last else ''
     nick_initial = nick[0] if nick else ''
 
-    # Clean inputs to remove problematic characters for email prefixes
     first_clean = re.sub(r'[^a-z0-9]', '', first)
     last_clean = re.sub(r'[^a-z0-9]', '', last)
     nick_clean = re.sub(r'[^a-z0-9]', '', nick) if nick else None
     
     permutations = set()
 
-    # Define common patterns and add them if name parts exist
     patterns_to_try = []
 
     # Full Name Combinations
     if first_clean and last_clean:
         patterns_to_try.extend([
-            f"{first_clean}.{last_clean}",
-            f"{first_clean}{last_clean}",
-            f"{first_clean}_{last_clean}",
-            f"{last_clean}.{first_clean}",
-            f"{last_clean}{first_clean}",
-            f"{last_clean}_{first_clean}",
+            f"{first_clean}.{last_clean}", f"{first_clean}{last_clean}", f"{first_clean}_{last_clean}",
+            f"{last_clean}.{first_clean}", f"{last_clean}{first_clean}", f"{last_clean}_{first_clean}",
         ])
     
     # Initial + Last Name
     if first_initial and last_clean:
         patterns_to_try.extend([
-            f"{first_initial}.{last_clean}",
-            f"{first_initial}{last_clean}",
-            f"{first_initial}_{last_clean}",
+            f"{first_initial}.{last_clean}", f"{first_initial}{last_clean}", f"{first_initial}_{last_clean}",
         ])
 
     # First Name + Last Initial
     if first_clean and last_initial:
         patterns_to_try.extend([
-            f"{first_clean}.{last_initial}",
-            f"{first_clean}{last_initial}",
-            f"{first_clean}_{last_initial}",
+            f"{first_clean}.{last_initial}", f"{first_clean}{last_initial}", f"{first_clean}_{last_initial}",
         ])
     
     # Initial + Initial
     if first_initial and last_initial:
         patterns_to_try.extend([
-            f"{first_initial}.{last_initial}",
-            f"{first_initial}{last_initial}",
-            f"{first_initial}_{last_initial}",
+            f"{first_initial}.{last_initial}", f"{first_initial}{last_initial}", f"{first_initial}_{last_initial}",
         ])
 
     # Single Name Only
@@ -303,38 +291,26 @@ def generate_email_permutations_raw(first_name, last_name, domain, nickname=None
         patterns_to_try.append(nick_clean)
         if first_clean and last_clean:
              patterns_to_try.extend([
-                f"{nick_clean}.{last_clean}",
-                f"{first_clean}.{nick_clean}",
-                f"{nick_clean}{last_clean}",
-                f"{first_clean}{nick_clean}",
-                f"{nick_clean}_{last_clean}",
-                f"{first_clean}_{nick_clean}",
+                f"{nick_clean}.{last_clean}", f"{first_clean}.{nick_clean}",
+                f"{nick_clean}{last_clean}", f"{first_clean}{nick_clean}",
+                f"{nick_clean}_{last_clean}", f"{first_clean}_{nick_clean}",
             ])
         elif first_clean:
             patterns_to_try.extend([
-                f"{nick_clean}{first_clean}",
-                f"{first_clean}{nick_clean}",
-                f"{nick_clean}_{first_clean}",
-                f"{first_clean}_{nick_clean}"
+                f"{nick_clean}{first_clean}", f"{first_clean}{nick_clean}",
+                f"{nick_clean}_{first_clean}", f"{first_clean}_{nick_clean}"
             ])
         elif last_clean:
              patterns_to_try.extend([
-                f"{nick_clean}{last_clean}",
-                f"{last_clean}{nick_clean}",
-                f"{nick_clean}_{last_clean}",
-                f"{last_clean}_{nick_clean}"
+                f"{nick_clean}{last_clean}", f"{last_clean}{nick_clean}",
+                f"{nick_clean}_{last_clean}", f"{last_clean}_{nick_clean}"
             ])
     
-    # Construct full emails
     for p in patterns_to_try:
-        if p: # Ensure pattern is not empty
+        if p:
             full_email = f"{p}@{dom}"
-            if is_valid_syntax(full_email): # Basic syntax check before adding
+            if is_valid_syntax(full_email):
                 permutations.add(full_email)
-
-    # Attempt variations of 'domain' part (e.g., if user types 'company' try 'company.com')
-    # This is more for the main validator's domain parsing, but good to ensure here too.
-    # We rely on tldextract and validate_email to fix domain later.
 
     return sorted(list(permutations))
 
@@ -381,77 +357,87 @@ with intro_text_col:
     """)
 
 with config_col:
-    with st.expander("⚙️ Configuration Settings", expanded=True):
+    with st.expander("⚙️ Configuration Settings", expanded=True): # Default to expanded for initial setup
         st.info("Adjust the parameters for email validation and sending. Your changes will apply to all subsequent actions.")
-        
-        st.subheader("SMTP Sender Details")
-        st.write("This email and password will be used for both SMTP verification and sending test emails.")
-        sender_email_input = st.text_input(
-            "Your Sender Email (e.g., yourname@gmail.com):",
-            value=DEFAULT_FROM_EMAIL,
-            key="sender_email_input",
-            help="This is the 'From' address for verification and sending."
-        )
-        sender_password_input = st.text_input(
-            "Sender Email Password / App Password:",
-            type="password",
-            key="sender_password_input",
-            help="For Gmail with 2FA, use an **App Password** (Google Account -> Security -> App Passwords)."
-        )
-        
-        st.markdown("---")
-        st.write("**Advanced SMTP Settings (for non-Gmail or custom servers)**")
-        st.info("""
-        Common SMTP Ports:
-        * **587:** Recommended for STARTTLS (explicit TLS). Most common.
-        * **465:** For SSL (implicit TLS).
-        * **25:** Unencrypted (often blocked/discouraged).
-        """)
-        smtp_host_input = st.text_input(
-            "SMTP Host (e.g., smtp.gmail.com):",
-            value=DEFAULT_SMTP_HOST,
-            key="smtp_host_input"
-        )
-        smtp_port_input = st.number_input(
-            "SMTP Port (e.g., 587):",
-            value=DEFAULT_SMTP_PORT,
-            key="smtp_port_input",
-            step=1,
-            help="Choose 587 for STARTTLS, 465 for SSL."
-        )
+        st.divider() # Visual separation
 
-        from_email_valid = is_valid_syntax(sender_email_input)
-        if not from_email_valid:
-            st.error("🚨 Invalid Sender Email format. Please correct.")
+        with st.container(border=True): # Grouping SMTP details
+            st.subheader("📬 SMTP Sender Details")
+            st.write("This email and password will be used for both SMTP verification and sending test emails.")
+            sender_email_input = st.text_input(
+                "Your Sender Email (e.g., yourname@gmail.com):",
+                value=DEFAULT_FROM_EMAIL,
+                key="sender_email_input",
+                help="This is the 'From' address for verification and sending."
+            )
+            sender_password_input = st.text_input(
+                "Sender Email Password / App Password:",
+                type="password",
+                key="sender_password_input",
+                help="For Gmail with 2FA, use an **App Password** (Google Account -> Security -> App Passwords). Other providers use your regular password."
+            )
+            
+            st.markdown("---") # Smaller divider within container
+            st.write("**Advanced SMTP Settings (for non-Gmail or custom servers)**")
+            st.info("""
+            Common SMTP Ports:
+            * **587:** Recommended for STARTTLS (explicit TLS). Most common.
+            * **465:** For SSL (implicit TLS).
+            * **25:** Unencrypted (often blocked/discouraged for sending).
+            """)
+            smtp_host_input = st.text_input(
+                "SMTP Host (e.g., smtp.gmail.com):",
+                value=DEFAULT_SMTP_HOST,
+                key="smtp_host_input",
+                help="The SMTP server address for your email provider."
+            )
+            smtp_port_input = st.number_input(
+                "SMTP Port (e.g., 587):",
+                value=DEFAULT_SMTP_PORT,
+                key="smtp_port_input",
+                step=1,
+                help="The port number your SMTP server uses for sending email."
+            )
 
-        st.markdown("---")
-        st.subheader("Validation Specific Settings")
-        st.write("Customize lists for email classification and enable/disable optional lookups.")
+            from_email_valid = is_valid_syntax(sender_email_input)
+            if not from_email_valid:
+                st.error("🚨 Invalid Sender Email format. Please correct.")
+            if not sender_password_input:
+                st.warning("⚠️ Sender Password is required for SMTP verification and sending.")
 
-        enable_company_lookup = st.checkbox(
-            "Enable Company/Organization Lookup (WHOIS)",
-            value=True,
-            help="Toggle this to enable/disable retrieving company information via WHOIS. Disable if you find results are consistently 'Private' or 'N/A' or if it significantly slows down validation."
-        )
-        if not enable_company_lookup:
-            st.info("Company/Organization Lookup is currently disabled. The 'Company/Org' column will show 'Lookup Disabled'.")
+        st.divider() # Visual separation
 
+        with st.container(border=True): # Grouping validation settings
+            st.subheader("🔍 Validation Specific Settings")
+            st.write("Customize lists for email classification and enable/disable optional lookups.")
 
-        disposable_input = st.text_area(
-            "Disposable Domains (comma or newline separated):",
-            value=", ".join(DEFAULT_DISPOSABLE_DOMAINS),
-            height=100,
-            key="disposable_domains_input"
-        )
-        disposable_domains_set = set(d.strip().lower() for d in disposable_input.replace(',', '\n').split('\n') if d.strip())
+            enable_company_lookup = st.checkbox(
+                "Enable Company/Organization Lookup (WHOIS)",
+                value=True,
+                help="Toggle this to enable/disable retrieving company information via WHOIS. Disable if you find results are consistently 'Private' or 'N/A' or if it significantly slows down validation."
+            )
+            if not enable_company_lookup:
+                st.info("Company/Organization Lookup is currently disabled. The 'Company/Org' column will show 'Lookup Disabled'.")
 
-        role_based_input = st.text_area(
-            "Role-based Prefixes (comma or newline separated):",
-            value=", ".join(DEFAULT_ROLE_BASED_PREFIXES),
-            height=100,
-            key="role_based_prefixes_input"
-        )
-        role_based_prefixes_set = set(p.strip().lower() for p in role_based_input.replace(',', '\n').split('\n') if p.strip())
+            st.markdown("---") # Smaller divider within container
+            disposable_input = st.text_area(
+                "Disposable Domains (comma or newline separated):",
+                value=", ".join(DISPOSABLE_DOMAINS),
+                height=100,
+                key="disposable_domains_input",
+                help="Domains commonly used for temporary or disposable email addresses. Emails from these domains will be flagged."
+            )
+            disposable_domains_set = set(d.strip().lower() for d in disposable_input.replace(',', '\n').split('\n') if d.strip())
+
+            st.markdown("---") # Smaller divider within container
+            role_based_input = st.text_area(
+                "Role-based Prefixes (comma or newline separated):",
+                value=", ".join(ROLE_BASED_PREFIXES),
+                height=100,
+                key="role_based_prefixes_input",
+                help="Email prefixes commonly used for roles (e.g., 'admin', 'support'). Emails with these prefixes will be flagged as role-based."
+            )
+            role_based_prefixes_set = set(p.strip().lower() for p in role_based_input.replace(',', '\n').split('\n') if p.strip())
 
 
 st.divider()
@@ -461,16 +447,16 @@ if 'stop_validation' not in st.session_state:
     st.session_state.stop_validation = False
 if 'is_validating' not in st.session_state:
     st.session_state.is_validating = False
-if 'stop_permutation_validation' not in st.session_state: # New stop flag for permutator
+if 'stop_permutation_validation' not in st.session_state:
     st.session_state.stop_permutation_validation = False
-if 'is_permutating_and_validating' not in st.session_state: # New validating flag for permutator
+if 'is_permutating_and_validating' not in st.session_state:
     st.session_state.is_permutating_and_validating = False
 
 
 # --- Callback for Stop Button ---
 def stop_validation_callback():
     st.session_state.stop_validation = True
-def stop_permutation_validation_callback(): # New callback for permutator stop button
+def stop_permutation_validation_callback():
     st.session_state.stop_permutation_validation = True
 
 
@@ -480,148 +466,161 @@ tab_validator, tab_sender, tab_permutator = st.tabs(["⚡ Email Validator", "✉
 # --- Email Validator Tab Content ---
 with tab_validator:
     st.header("🚀 Validate Your Emails")
-    st.info("""
-        Enter the email addresses you wish to validate.
-        You can enter them separated by commas, newlines, or a mix of both.
-        """)
+    st.markdown("""
+    Paste a list of email addresses below. The tool will conduct a deep validation, checking syntax, domain existence, MX records, and performing SMTP mailbox verification.
+    """)
+    st.divider()
 
     user_input = st.text_area(
-        "Emails to Validate",
+        "Enter emails here (separated by commas or newlines):",
         placeholder="e.g., alice@example.com, bob@company.net\ncontact@marketing.org",
         height=250,
         key="email_input"
     )
 
-    col_start_btn, col_stop_btn_placeholder = st.columns([1, 1]) # Placeholder for stop button
-    
-    if col_start_btn.button("✅ Validate Emails", use_container_width=True, type="primary", disabled=st.session_state.is_validating):
-        st.session_state.stop_validation = False
-        st.session_state.is_validating = True
+    # Use a container for consistent spacing around buttons
+    with st.container():
+        col_start_btn, col_spacer = st.columns([1, 4]) # col_stop_btn will be inside status
 
-        if not from_email_valid:
-            st.error("🚨 Cannot proceed: Your Sender Email (in Configuration) is invalid. Please correct it.")
-            st.session_state.is_validating = False
-        else:
-            raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
-            
-            if not raw_emails:
-                st.warning("☝️ Please enter at least one email address to validate.")
+        # The Validate button's disabled state ensures it's not clickable while another process is running
+        if col_start_btn.button("✅ Validate Emails", use_container_width=True, type="primary", disabled=st.session_state.is_validating or st.session_state.is_permutating_and_validating):
+            st.session_state.stop_validation = False
+            st.session_state.is_validating = True
+
+            if not from_email_valid or not sender_password_input: # Check sender credentials for SMTP
+                st.error("🚨 Cannot proceed: Your Sender Email and/or Password (in Configuration) are invalid or missing. Please correct them.")
                 st.session_state.is_validating = False
             else:
-                unique_emails = list(set(raw_emails))
-                if len(raw_emails) != len(unique_emails):
-                    st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
-                emails_to_validate = unique_emails
+                raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
                 
-                with st.status(f"Validating {len(emails_to_validate)} email(s)... Please wait.", expanded=True) as status_container:
-                    # Place the Stop button directly inside the status container
-                    st.button("⏹️ Stop Validation", key="status_stop_btn_validator", on_click=stop_validation_callback, help="Click to immediately halt the current validation process.")
-                    
-                    progress_bar = st.progress(0, text="Starting validation...")
-                    
-                    results = []
-                    total_emails = len(emails_to_validate)
-
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup): email for email in emails_to_validate}
-                        
-                        for i, future in enumerate(as_completed(futures)):
-                            if st.session_state.stop_validation:
-                                status_container.update(label="Validation Aborted by User!", state="error", expanded=True)
-                                for f in futures:
-                                    f.cancel()
-                                break
-                            
-                            results.append(future.result())
-                            progress_percent = (i + 1) / total_emails
-                            progress_bar.progress(progress_percent, text=f"Processing email {i + 1} of {total_emails}...")
-                    
-                    if not st.session_state.stop_validation:
-                        status_container.update(label="Validation Complete!", state="complete", expanded=False)
-                    
-                st.session_state.is_validating = False
-                st.session_state.stop_validation = False 
-
-                if results:
-                    df = pd.DataFrame(results)
-                    
-                    if st.session_state.stop_validation:
-                        st.warning("Validation was stopped. Displaying partial results:")
-                    else:
-                        st.success("🎉 Validation complete! Here are your results:")
-
-                    st.subheader("📊 Validation Summary")
-                    verdict_counts = Counter(df['Verdict'])
-                    
-                    summary_cols = st.columns(len(verdict_counts) if len(verdict_counts) > 0 else 1)
-                    col_idx = 0
-                    
-                    metric_icons = {
-                        "✅ Valid": "✨",
-                        "❌ Invalid": "🚫",
-                        "⚠️ Disposable": "🗑️",
-                        "ℹ️ Role-based": "👥",
-                        "❌ Invalid Syntax": "📝",
-                        "❌ Invalid Domain Format": "🌐"
-                    }
-
-                    for verdict in sorted(verdict_counts.keys()):
-                        count = verdict_counts[verdict]
-                        with summary_cols[col_idx % len(summary_cols)]:
-                            st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
-                        col_idx += 1
-                    
-                    if not df.empty:
-                        avg_score = df['Score'].mean()
-                        st.metric("⭐ Average Deliverability Score", f"{avg_score:.2f}")
-
-                    st.divider()
-
-                    st.subheader("Detailed Results & Export")
-                    
-                    all_verdicts = df['Verdict'].unique().tolist()
-                    filter_options = ["All"] + sorted(all_verdicts)
-                    
-                    selected_verdict = st.selectbox(
-                        "🔍 Filter results by verdict type:", 
-                        filter_options, 
-                        help="Select 'All' to view all validated emails, or choose a specific verdict to filter."
-                    )
-
-                    filtered_df = df
-                    if selected_verdict != "All":
-                        filtered_df = df[df['Verdict'] == selected_verdict]
-
-                    st.dataframe(filtered_df, use_container_width=True, height=400)
-
-                    csv = filtered_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "⬇️ Download Filtered Results as CSV",
-                        data=csv,
-                        file_name="email_validation_results.csv",
-                        mime="text/csv",
-                        help="Click to download the currently displayed (filtered) validation results as a CSV file. Includes Email, Domain, Company/Org, Validation Flags, Verdict, and Deliverability Score."
-                    )
+                if not raw_emails:
+                    st.warning("☝️ Please enter at least one email address to validate.")
+                    st.session_state.is_validating = False
                 else:
-                    st.info("No results to display. Validation might have been stopped prematurely or no valid emails were found.")
+                    unique_emails = list(set(raw_emails))
+                    if len(raw_emails) != len(unique_emails):
+                        st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
+                    emails_to_validate = unique_emails
+                    
+                    # --- Validation Status and Stop Button ---
+                    with st.status(f"Validating {len(emails_to_validate)} email(s)... Please wait.", expanded=True, state="running") as status_container:
+                        st.button("⏹️ Stop Validation", key="status_stop_btn_validator", on_click=stop_validation_callback, help="Click to immediately halt the current validation process.")
+                        
+                        progress_bar = st.progress(0, text="Starting validation...")
+                        
+                        results = []
+                        total_emails = len(emails_to_validate)
 
+                        with ThreadPoolExecutor(max_workers=10) as executor:
+                            futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup): email for email in emails_to_validate}
+                            
+                            for i, future in enumerate(as_completed(futures)):
+                                if st.session_state.stop_validation:
+                                    status_container.update(label="Validation Aborted by User! 🛑", state="error", expanded=True)
+                                    for f in futures:
+                                        f.cancel() # Attempt to cancel pending futures
+                                    break
+                                
+                                results.append(future.result())
+                                progress_percent = (i + 1) / total_emails
+                                progress_bar.progress(progress_percent, text=f"Processing email {i + 1} of {total_emails}...")
+                        
+                        if not st.session_state.stop_validation:
+                            status_container.update(label="Validation Complete! 🎉", state="complete", expanded=False)
+                        
+                    # Reset state variables after validation attempt (either complete or aborted)
+                    st.session_state.is_validating = False
+                    st.session_state.stop_validation = False 
+
+                    # Display results only if some results were collected
+                    if results:
+                        df = pd.DataFrame(results)
+                        
+                        if st.session_state.stop_validation:
+                            st.warning("Validation was stopped. Displaying partial results:")
+                        else:
+                            st.success("🎉 Validation complete! Here are your results:")
+
+                        st.subheader("📊 Validation Summary")
+                        verdict_counts = Counter(df['Verdict'])
+                        
+                        # Dynamic columns for summary metrics
+                        summary_cols = st.columns(min(len(verdict_counts) + 1, 5)) # Max 5 columns for layout
+                        col_idx = 0
+                        
+                        metric_icons = {
+                            "✅ Valid": "✨", "❌ Invalid": "🚫", "⚠️ Disposable": "🗑️",
+                            "ℹ️ Role-based": "👥", "❌ Invalid Syntax": "📝", "❌ Invalid Domain Format": "🌐"
+                        }
+
+                        for verdict in sorted(verdict_counts.keys()):
+                            count = verdict_counts[verdict]
+                            with summary_cols[col_idx % len(summary_cols)]:
+                                st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
+                            col_idx += 1
+                        
+                        if not df.empty:
+                            with summary_cols[col_idx % len(summary_cols)]: # Use next available summary column for average score
+                                avg_score = df['Score'].mean()
+                                st.metric("⭐ Avg. Score", f"{avg_score:.2f}")
+
+                        st.divider()
+
+                        st.subheader("Detailed Results & Export")
+                        
+                        all_verdicts = df['Verdict'].unique().tolist()
+                        filter_options = ["All"] + sorted(all_verdicts)
+                        
+                        selected_verdict = st.selectbox(
+                            "🔍 Filter results by verdict type:", 
+                            filter_options, 
+                            help="Select 'All' to view all validated emails, or choose a specific verdict to filter."
+                        )
+
+                        filtered_df = df
+                        if selected_verdict != "All":
+                            filtered_df = df[df['Verdict'] == selected_verdict]
+
+                        st.dataframe(filtered_df, use_container_width=True, height=400)
+
+                        csv = filtered_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            "⬇️ Download Filtered Results as CSV",
+                            data=csv,
+                            file_name="email_validation_results.csv",
+                            mime="text/csv",
+                            help="Click to download the currently displayed (filtered) validation results as a CSV file. Includes Email, Domain, Company/Org, Validation Flags, Verdict, and Deliverability Score."
+                        )
+                    else:
+                        st.info("No results to display. Validation might have been stopped prematurely or no valid emails were found.")
+
+st.write("") # Add some vertical space
 # --- Send Test Email Tab Content ---
 with tab_sender:
     st.header("✉️ Send a Test Email")
-    st.info("""
-        Use this feature to send a test email from your configured sender account.
-        This helps confirm your SMTP settings and ensure your emails are being sent successfully.
-        """)
+    st.markdown("""
+    Use this feature to send a test email from your configured sender account. This helps confirm your SMTP settings and ensure your messages can be sent successfully.
+    """)
+    st.divider()
     
     st.warning("""
         **Gmail Users with 2-Step Verification:** You **MUST** generate an **App Password** for your Google account and use that in the password field in `Configuration Settings`. Your regular Gmail password will likely not work.
         """)
 
-    recipient_test_email = st.text_input("Recipient Email:", key="recipient_test_email", placeholder="test@example.com")
-    test_subject = st.text_input("Subject:", key="test_subject", placeholder="Test Email from Streamlit App")
-    test_body = st.text_area("Email Body:", key="test_body", height=150, placeholder="Hello, this is a test email sent from the Streamlit Email Tool!")
+    recipient_test_email = st.text_input("Recipient Email:", key="recipient_test_email", placeholder="test@example.com", help="The email address to send the test email to.")
+    test_subject = st.text_input("Subject:", key="test_subject", placeholder="Test Email from Streamlit App", help="The subject line of your test email.")
+    test_body = st.text_area("Email Body:", key="test_body", height=150, placeholder="Hello, this is a test email sent from the Streamlit Email Tool!", help="The content of your test email.")
 
-    can_send_email = from_email_valid and bool(sender_password_input) and bool(recipient_test_email) and bool(test_subject) and bool(test_body)
+    # Disable send button if sender email/password are not provided/valid OR if validation is running
+    can_send_email = (
+        from_email_valid and 
+        bool(sender_password_input) and 
+        bool(recipient_test_email) and 
+        bool(test_subject) and 
+        bool(test_body) and 
+        not st.session_state.is_validating and 
+        not st.session_state.is_permutating_and_validating
+    )
 
     if st.button("🚀 Send Test Email", type="primary", disabled=not can_send_email):
         with st.spinner("Sending email..."):
@@ -639,150 +638,22 @@ with tab_sender:
             else:
                 st.error(f"❌ {message}")
 
-# --- Email Permutator Tab Content (UPDATED) ---
+st.write("") # Add some vertical space
+# --- Email Permutator Tab Content ---
 with tab_permutator:
     st.header("🧩 Email Permutator & Validator")
-    st.info("""
+    st.markdown("""
         Generate a list of common email address combinations for a person based on their name and domain.
         The tool will then **automatically validate** these generated emails against all deliverability checks.
         """)
     st.warning("⚠️ **Important:** While this tool generates possible emails, the validation process is crucial to determine their actual deliverability. Some valid permutations may not correspond to an active email address.")
+    st.divider()
 
     col_name1, col_name2 = st.columns(2)
     with col_name1:
-        perm_first_name = st.text_input("First Name:", key="perm_first_name", placeholder="John")
+        perm_first_name = st.text_input("First Name:", key="perm_first_name", placeholder="John", help="The first name of the person.")
     with col_name2:
-        perm_last_name = st.text_input("Last Name:", key="perm_last_name", placeholder="Doe")
+        perm_last_name = st.text_input("Last Name:", key="perm_last_name", placeholder="Doe", help="The last name of the person.")
     
-    perm_nickname = st.text_input("Nickname (Optional):", key="perm_nickname", placeholder="Johnny")
-    perm_domain = st.text_input("Domain (e.g., example.com):", key="perm_domain", placeholder="company.com")
-
-    # Disable button if any required field is empty or if already running
-    can_generate_and_validate = (
-        (bool(perm_first_name) or bool(perm_last_name) or bool(perm_nickname)) and 
-        bool(perm_domain) and 
-        not st.session_state.is_permutating_and_validating and
-        from_email_valid # Ensure sender email is valid for validation part
-    )
-
-    col_gen_btn, col_stop_perm_btn = st.columns([1, 1])
-
-    if col_gen_btn.button("✨ Generate & Validate Emails", type="primary", disabled=not can_generate_and_validate):
-        st.session_state.stop_permutation_validation = False # Reset stop flag
-        st.session_state.is_permutating_and_validating = True # Set running state
-
-        if not from_email_valid:
-            st.error("🚨 Cannot proceed: Your Sender Email (in Configuration) is invalid. Please correct it.")
-            st.session_state.is_permutating_and_validating = False
-        elif not perm_first_name and not perm_last_name and not perm_nickname:
-            st.warning("Please enter at least a First Name, Last Name, or Nickname to generate permutations.")
-            st.session_state.is_permutating_and_validating = False
-        elif not perm_domain:
-            st.warning("Please enter a Domain to generate permutations.")
-            st.session_state.is_permutating_and_validating = False
-        else:
-            with st.status("Generating email permutations...", expanded=True) as gen_status:
-                generated_emails_raw = generate_email_permutations_raw(
-                    first_name=perm_first_name,
-                    last_name=perm_last_name,
-                    domain=perm_domain,
-                    nickname=perm_nickname if perm_nickname else None
-                )
-                gen_status.update(label=f"Generated {len(generated_emails_raw)} unique permutations. Now validating...", state="running", expanded=True)
-            
-            if not generated_emails_raw:
-                st.warning("No email combinations could be generated with the provided details. Please check your input.")
-                st.session_state.is_permutating_and_validating = False
-            else:
-                with st.status(f"Validating {len(generated_emails_raw)} generated emails... Please wait.", expanded=True) as val_status_container:
-                    st.button("⏹️ Stop Permutation Validation", key="status_stop_perm_btn", on_click=stop_permutation_validation_callback, help="Click to immediately halt the validation of generated emails.")
-                    
-                    progress_bar = st.progress(0, text="Starting validation of permutations...")
-                    
-                    validated_results = []
-                    total_generated = len(generated_emails_raw)
-
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup): email for email in generated_emails_raw}
-                        
-                        for i, future in enumerate(as_completed(futures)):
-                            if st.session_state.stop_permutation_validation:
-                                val_status_container.update(label="Permutation Validation Aborted by User!", state="error", expanded=True)
-                                for f in futures:
-                                    f.cancel()
-                                break
-                            
-                            validated_results.append(future.result())
-                            progress_percent = (i + 1) / total_generated
-                            progress_bar.progress(progress_percent, text=f"Processing generated email {i + 1} of {total_generated}...")
-                    
-                    if not st.session_state.stop_permutation_validation:
-                        val_status_container.update(label="Permutation Validation Complete!", state="complete", expanded=False)
-                    
-                st.session_state.is_permutating_and_validating = False # Reset state
-                st.session_state.stop_permutation_validation = False # Reset stop flag
-
-                # --- Display Validated Permutations ---
-                if validated_results:
-                    df_validated_permutations = pd.DataFrame(validated_results)
-                    
-                    if st.session_state.stop_permutation_validation:
-                        st.warning("Permutation validation was stopped. Displaying partial results:")
-                    else:
-                        st.success("🎉 Permutations generated and validated! Here are the results:")
-
-                    st.subheader("📊 Permutation Validation Summary")
-                    perm_verdict_counts = Counter(df_validated_permutations['Verdict'])
-                    
-                    perm_summary_cols = st.columns(len(perm_verdict_counts) if len(perm_verdict_counts) > 0 else 1)
-                    perm_col_idx = 0
-                    
-                    metric_icons = { # Reusing icons defined earlier
-                        "✅ Valid": "✨", "❌ Invalid": "🚫", "⚠️ Disposable": "🗑️",
-                        "ℹ️ Role-based": "👥", "❌ Invalid Syntax": "📝", "❌ Invalid Domain Format": "🌐"
-                    }
-
-                    for verdict in sorted(perm_verdict_counts.keys()):
-                        count = perm_verdict_counts[verdict]
-                        with perm_summary_cols[perm_col_idx % len(perm_summary_cols)]:
-                            st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
-                        perm_col_idx += 1
-                    
-                    if not df_validated_permutations.empty:
-                        avg_perm_score = df_validated_permutations['Score'].mean()
-                        st.metric("⭐ Average Permutation Deliverability Score", f"{avg_perm_score:.2f}")
-
-                    st.divider()
-
-                    st.subheader("Detailed Permutation Results & Export")
-                    
-                    perm_all_verdicts = df_validated_permutations['Verdict'].unique().tolist()
-                    perm_filter_options = ["All"] + sorted(perm_all_verdicts)
-                    
-                    perm_selected_verdict = st.selectbox(
-                        "🔍 Filter permutation results by verdict type:", 
-                        perm_filter_options, 
-                        key="perm_filter_select", # Unique key for this selectbox
-                        help="Select 'All' to view all validated permutations, or choose a specific verdict to filter."
-                    )
-
-                    perm_filtered_df = df_validated_permutations
-                    if perm_selected_verdict != "All":
-                        perm_filtered_df = df_validated_permutations[df_validated_permutations['Verdict'] == perm_selected_verdict]
-
-                    st.dataframe(perm_filtered_df, use_container_width=True, height=400)
-
-                    csv_permutations_validated = perm_filtered_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "⬇️ Download Validated Permutations as CSV",
-                        data=csv_permutations_validated,
-                        file_name="email_permutations_validated.csv",
-                        mime="text/csv",
-                        help="Download the list of generated and validated email permutations."
-                    )
-                else:
-                    st.info("No validated permutations to display. Generation or validation might have been stopped prematurely, or no valid inputs were provided.")
-
-
-st.divider()
-st.markdown("Developed with ❤️ with Streamlit and community libraries.")
+    perm_nickname = st.text_input("Nickname (Optional):", key="perm_nickname", placeholder="Johnny", help="An optional nickname for more permutations.")
+    perm_domain = st.text_input("Domain (e.g., example
