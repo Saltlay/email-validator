@@ -3,53 +3,42 @@ import re
 import smtplib
 import dns.resolver
 import pandas as pd
-from io import StringIO
 
-# -------------------- Email Permutator Logic --------------------
-
+# ------------------ Constants ------------------
+DISPOSABLE_DOMAINS = {"mailinator.com", "10minutemail.com", "guerrillamail.com", "trashmail.com", "tempmail.com", "yopmail.com"}
+ROLE_BASED_PREFIXES = {"admin", "support", "info", "sales", "contact", "webmaster", "help"}
 NICKNAME_MAP = {
-    "johnathan": "john", "michael": "mike", "william": "will", "stephen": "steve",
-    "jennifer": "jen", "daniel": "dan", "richard": "rich", "jessica": "jess",
-    "james": "jim", "robert": "rob", "christopher": "chris", "matthew": "matt",
-    "anthony": "tony", "andrew": "andy", "patrick": "pat", "nicholas": "nick"
-}
-
-def get_nickname(name):
-    return NICKNAME_MAP.get(name.lower(), "")
-
-def generate_permutations(first, middle, last, domain):
-    parts = [first, middle, last]
-    base_names = set()
-
-    if first: base_names.add(first)
-    if last: base_names.add(last)
-    if middle: base_names.add(middle)
-    if get_nickname(first): base_names.add(get_nickname(first))
-
-    combos = set()
-
-    for f in base_names:
-        for l in base_names:
-            if f != l:
-                combos.update([
-                    f"{f}.{l}", f"{f}{l}", f"{f}_{l}", f"{f[0]}{l}", f"{f}{l[0]}",
-                    f"{l}.{f}", f"{l}{f}", f"{l}_{f}", f"{l[0]}{f}", f"{f[0]}.{l}"
-                ])
-        combos.add(f)
-
-    return [f"{c.lower()}@{domain}" for c in combos]
-
-# -------------------- Email Validator Logic --------------------
-
-DISPOSABLE_DOMAINS = {
-    "mailinator.com", "10minutemail.com", "guerrillamail.com",
-    "trashmail.com", "tempmail.com", "yopmail.com"
-}
-ROLE_BASED_PREFIXES = {
-    "admin", "support", "info", "sales", "contact", "webmaster", "help"
+    "johnathan": "john", "jonathan": "john", "michael": "mike", "william": "will", "robert": "rob",
+    "richard": "rich", "joseph": "joe", "daniel": "dan", "stephen": "steve", "james": "jim",
+    "alexander": "alex", "nicholas": "nick", "charles": "charlie", "andrew": "andy"
 }
 FROM_EMAIL = "check@yourdomain.com"
 mx_cache = {}
+
+# ------------------ Utility Functions ------------------
+def clean_name(name):
+    return re.sub(r'\s+', '', name.strip().lower())
+
+def generate_nicknames(name):
+    return [name] + ([NICKNAME_MAP[name]] if name in NICKNAME_MAP else [])
+
+def generate_emails(first, middle, last, domain):
+    firsts = generate_nicknames(first)
+    middles = [middle] if middle else [""]
+    lasts = [last] if last else [""]
+    patterns = []
+
+    for f in firsts:
+        for m in middles:
+            for l in lasts:
+                combos = [
+                    f, l, f + l, f + "." + l, f + "_" + l,
+                    f[0] + l, f + l[0], f[0] + "." + l, f + m + l,
+                    l + f, l + "." + f, f + m + "." + l
+                ]
+                patterns.extend(filter(None, combos))
+    patterns = list(set(patterns))
+    return [f"{p}@{domain}" for p in patterns if domain]
 
 def is_valid_syntax(email):
     return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
@@ -91,87 +80,53 @@ def validate_email(email):
     email = email.strip()
     result = {
         "Email": email,
-        "Syntax Valid": False,
-        "MX Record": False,
-        "Disposable": False,
-        "Role-based": False,
-        "SMTP Valid": False,
+        "Syntax": "❌",
+        "MX": "❌",
+        "Disposable": "✅" if is_disposable(email) else "❌",
+        "Role-based": "✅" if is_role_based(email) else "❌",
+        "SMTP": "❌",
         "Verdict": "❌ Invalid"
     }
-
-    if not is_valid_syntax(email):
-        return result
-    result["Syntax Valid"] = True
-    result["Disposable"] = is_disposable(email)
-    result["Role-based"] = is_role_based(email)
+    if not is_valid_syntax(email): return result
+    result["Syntax"] = "✅"
     domain = email.split('@')[1]
-    result["MX Record"] = has_mx_record(domain)
-    if result["MX Record"]:
-        result["SMTP Valid"] = verify_smtp(email)
-    if all([result["Syntax Valid"], result["MX Record"], result["SMTP Valid"]]) and not result["Disposable"]:
+    if has_mx_record(domain):
+        result["MX"] = "✅"
+        result["SMTP"] = "✅" if verify_smtp(email) else "❌"
+    if result["Syntax"] == "✅" and result["MX"] == "✅" and result["SMTP"] == "✅" and result["Disposable"] == "❌":
         result["Verdict"] = "✅ Valid"
     return result
 
-# -------------------- Streamlit UI --------------------
-
+# ------------------ UI ------------------
 st.set_page_config(page_title="Email Permutator & Validator", layout="wide")
-st.title("📧 Email Permutator + Validator Tool")
+st.title("📧 Email Permutator & Validator")
+st.markdown("Enter name and domain to generate & validate emails.")
 
-tab1, tab2 = st.tabs(["🔧 Permutate + Validate", "📁 Validate Uploaded Emails"])
-
-# ------------- Tab 1: Permutator + Validator ----------------
-with tab1:
-    st.subheader("🔄 Generate email permutations and validate them")
-
+with st.form("input_form"):
     col1, col2 = st.columns(2)
-
     with col1:
-        full_name = st.text_input("Enter Full Name").strip()
+        full_name = st.text_input("👤 Full Name (First Middle Last)", placeholder="e.g. John Michael Doe")
     with col2:
-        raw_domain = st.text_input("Enter Domain (e.g., example.com or https://example.com)").strip()
+        domain = st.text_input("🌐 Domain or Website", placeholder="e.g. example.com or www.example.com")
+    submit = st.form_submit_button("🚀 Generate & Validate")
 
-    if full_name and raw_domain:
-        # Normalize name
-        name_parts = full_name.lower().replace(".", " ").replace(",", " ").split()
-        first, middle, last = "", "", ""
-        if len(name_parts) >= 1: first = name_parts[0]
-        if len(name_parts) == 2: last = name_parts[1]
-        if len(name_parts) >= 3:
-            middle = name_parts[1]
-            last = name_parts[2]
+if submit:
+    name_parts = clean_name(full_name).split()
+    first = name_parts[0] if len(name_parts) > 0 else ""
+    middle = name_parts[1] if len(name_parts) == 3 else ""
+    last = name_parts[-1] if len(name_parts) > 1 else ""
 
-        # Normalize domain
-        domain = raw_domain.lower().replace("http://", "").replace("https://", "").replace("www.", "").strip().split('/')[0]
+    domain = domain.lower().replace("https://", "").replace("http://", "").replace("www.", "").strip().split('/')[0]
 
-        permutations = generate_permutations(first, middle, last, domain)
+    if not first or not domain:
+        st.error("❗ Please enter both a valid name and domain.")
+    else:
+        with st.spinner("⏳ Generating and validating emails..."):
+            emails = generate_emails(first, middle, last, domain)
+            results = [validate_email(e) for e in emails]
+            df = pd.DataFrame(results)
+            st.success(f"✅ Done! {len(results)} permutations checked.")
+            st.dataframe(df)
 
-        if st.button("🚀 Generate & Validate Emails"):
-            results = [validate_email(e) for e in permutations]
-            df_results = pd.DataFrame(results)
-            st.success(f"✅ Generated and validated {len(results)} permutations")
-            st.dataframe(df_results)
-
-            csv = df_results.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download CSV", data=csv, file_name="permutated_valid_emails.csv", mime="text/csv")
-
-# ------------- Tab 2: Bulk Email Validation ----------------
-with tab2:
-    st.subheader("📁 Bulk Email Validation via CSV")
-    st.markdown("Upload a CSV file with a column named `Email`.")
-
-    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
-
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        if "Email" in df.columns:
-            email_list = df["Email"].dropna().astype(str).tolist()
-            if st.button("🚀 Validate Emails"):
-                results = [validate_email(email) for email in email_list]
-                df_results = pd.DataFrame(results)
-                st.success(f"✅ Validated {len(results)} emails")
-                st.dataframe(df_results)
-
-                csv = df_results.to_csv(index=False).encode("utf-8")
-                st.download_button("📥 Download CSV", data=csv, file_name="validated_emails.csv", mime="text/csv")
-        else:
-            st.error("CSV must contain a column named 'Email'")
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button("📥 Download CSV", data=csv, file_name="email_results.csv", mime="text/csv")
