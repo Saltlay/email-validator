@@ -223,9 +223,12 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email, e
     result["MX Record"] = has_mx_record(registrable_domain)
 
     # 5. SMTP Verification (only if MX record exists and not disposable, to save time/requests)
-    # You might adjust this condition based on whether you want SMTP check even for flagged emails
-    if result["MX Record"] and not result["Disposable"]:
+    # This also depends on the 'from_email' being valid and present for authentication
+    if result["MX Record"] and not result["Disposable"] and from_email: # Added 'from_email' check
         result["SMTP Valid"] = verify_smtp(email, registrable_domain, from_email)
+    else:
+        # If SMTP check cannot be performed (e.g., no MX, disposable, or sender credentials missing)
+        result["SMTP Valid"] = False # Explicitly set to False if not attempted
 
     # Final Verdict Logic (ordered by priority/impact)
     if result["Disposable"]:
@@ -294,7 +297,7 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
         # Fallback for any other unexpected errors
         return False, f"Failed to send email: An unexpected error occurred: {error_message}"
 
-# --- Email Permutator ---
+# --- Email Permutator Logic ---
 def generate_email_permutations_raw(first_name, last_name, domain, nickname=None):
     """
     Generates common email address permutations for a given name and domain, including nicknames.
@@ -683,7 +686,7 @@ with tab_sender:
     test_subject = st.text_input("Subject:", key="test_subject", placeholder="Test Email from Streamlit App", help="The subject line of your test email.")
     test_body = st.text_area("Email Body:", key="test_body", height=150, placeholder="Hello, this is a test email sent from the Streamlit Email Tool!", help="The content of your test email.")
 
-    # Disable send button if sender email/password are not provided/valid OR if any validation is running
+    # Disable send button if sender email/password are not provided/valid OR if validation is running
     can_send_email = (
         from_email_valid and 
         bool(sender_password_input) and # Ensure password is not empty
@@ -694,6 +697,7 @@ with tab_sender:
         not st.session_state.is_permutating_and_validating # Check permutator's running state
     )
     
+    # Provide hints if button is disabled
     if not from_email_valid or not sender_password_input:
         st.info("💡 Please set your 'Sender Email' and 'Password' in Configuration Settings to enable sending.")
     elif not (bool(recipient_test_email) and bool(test_subject) and bool(test_body)):
@@ -734,25 +738,27 @@ with tab_permutator:
         perm_last_name = st.text_input("Last Name:", key="perm_last_name", placeholder="Doe", help="The last name of the person.")
     
     perm_nickname = st.text_input("Nickname (Optional):", key="perm_nickname", placeholder="Johnny", help="An optional nickname for more permutations.")
+    # Corrected string literal for the placeholder
     perm_domain = st.text_input("Domain (e.g., example.com):", key="perm_domain", placeholder="company.com", help="The company or organization's domain name.")
 
-    # Disable button if any required field is empty or if already running
+    # Disable button if any required input fields are empty or if another process is running
     can_generate_and_validate = (
         (bool(perm_first_name) or bool(perm_last_name) or bool(perm_nickname)) and 
         bool(perm_domain) and 
         not st.session_state.is_permutating_and_validating and # Check its own running state
-        not st.session_state.is_validating and # Check if main validator is running
-        from_email_valid and # Ensure sender email is valid for validation part
-        bool(sender_password_input) # Ensure password is provided for validation part
+        not st.session_state.is_validating # Check if main validator is running
+        # No dependency on sender credentials here, as generation is independent
     )
     
-    # Provide hints if button is disabled
+    # Provide hints if button is disabled due to missing permutation inputs
     if not (bool(perm_first_name) or bool(perm_last_name) or bool(perm_nickname)):
-        st.info("💡 Enter at least a First Name, Last Name, or Nickname.")
+        st.info("💡 Enter at least a First Name, Last Name, or Nickname to enable generation.")
     elif not perm_domain:
-        st.info("💡 Enter a Domain (e.g., example.com).")
-    elif not from_email_valid or not sender_password_input:
-         st.info("💡 Please set your 'Sender Email' and 'Password' in Configuration Settings to enable validation for permutations.")
+        st.info("💡 Enter a Domain (e.g., example.com) to enable generation.")
+    
+    # Provide a separate hint if validation part will be impacted by missing sender credentials
+    if can_generate_and_validate and (not from_email_valid or not sender_password_input):
+         st.warning("⚠️ **Validation for generated emails will be limited!** Please set your 'Sender Email' and 'Password' in Configuration Settings for full SMTP checks.")
 
 
     col_gen_btn, col_stop_perm_btn_spacer = st.columns([1, 1]) # spacer for stop button placeholder
@@ -761,131 +767,127 @@ with tab_permutator:
         st.session_state.stop_permutation_validation = False
         st.session_state.is_permutating_and_validating = True
 
-        if not from_email_valid or not sender_password_input:
-            st.error("🚨 Cannot proceed: Your Sender Email and/or Password (in Configuration) are invalid or missing. Please correct them.")
-            st.session_state.is_permutating_and_validating = False
-        elif not perm_first_name and not perm_last_name and not perm_nickname:
-            st.warning("Please enter at least a First Name, Last Name, or Nickname to generate permutations.")
-            st.session_state.is_permutating_and_validating = False
-        elif not perm_domain:
-            st.warning("Please enter a Domain to generate permutations.")
-            st.session_state.is_permutating_and_validating = False
-        else:
-            # --- Permutation Generation Status ---
-            with st.status("Generating email permutations...", expanded=True, state="running") as gen_status:
-                generated_emails_raw = generate_email_permutations_raw(
-                    first_name=perm_first_name,
-                    last_name=perm_last_name,
-                    domain=perm_domain,
-                    nickname=perm_nickname if perm_nickname else None
-                )
-                if generated_emails_raw:
-                    gen_status.update(label=f"Generated {len(generated_emails_raw)} unique permutations. Now validating...", state="running", expanded=True)
-                else:
-                    gen_status.update(label="No permutations generated. Check input.", state="complete", expanded=False)
-                    st.warning("No email combinations could be generated with the provided details. Please check your input.")
-                    st.session_state.is_permutating_and_validating = False # Reset state
-                    st.session_state.stop_permutation_validation = False # Reset stop flag
-                    # Exit early if no permutations
-                    st.experimental_rerun() # Rerun to clear status and enable button
+        # Check sender credentials specifically before starting validation portion
+        perform_smtp_checks_for_permutations = from_email_valid and bool(sender_password_input)
+        if not perform_smtp_checks_for_permutations:
+            st.warning("⚠️ Sender Email or Password missing/invalid. SMTP verification will be skipped for generated emails.")
+            # Do NOT set is_permutating_and_validating to False, as generation can still happen
 
-            # Only proceed to validation if permutations were generated
-            if generated_emails_raw and st.session_state.is_permutating_and_validating: # Check this flag after generation status
-                # --- Permutation Validation Status ---
-                with st.status(f"Validating {len(generated_emails_raw)} generated emails... Please wait.", expanded=True, state="running") as val_status_container:
-                    # Stop button for permutation validation
-                    st.button("⏹️ Stop Permutation Validation", key="status_stop_perm_btn", on_click=stop_permutation_validation_callback, help="Click to immediately halt the validation of generated emails.")
-                    
-                    progress_bar = st.progress(0, text="Starting validation of permutations...")
-                    
-                    validated_results = []
-                    total_generated = len(generated_emails_raw)
+        # --- Permutation Generation Status ---
+        with st.status("Generating email permutations...", expanded=True, state="running") as gen_status:
+            generated_emails_raw = generate_email_permutations_raw(
+                first_name=perm_first_name,
+                last_name=perm_last_name,
+                domain=perm_domain,
+                nickname=perm_nickname if perm_nickname else None
+            )
+            if generated_emails_raw:
+                gen_status.update(label=f"Generated {len(generated_emails_raw)} unique permutations. Now validating...", state="running", expanded=True)
+            else:
+                gen_status.update(label="No permutations generated. Check input.", state="complete", expanded=False)
+                st.warning("No email combinations could be generated with the provided details. Please check your input.")
+                st.session_state.is_permutating_and_validating = False # Reset state
+                st.session_state.stop_permutation_validation = False # Reset stop flag
+                st.experimental_rerun() # Rerun to clear status and enable button
 
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        # Pass all necessary validation configs
-                        futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup): email for email in generated_emails_raw}
+        # Only proceed to validation if permutations were generated and app is still running
+        if generated_emails_raw and st.session_state.is_permutating_and_validating:
+            # --- Permutation Validation Status ---
+            with st.status(f"Validating {len(generated_emails_raw)} generated emails... Please wait.", expanded=True, state="running") as val_status_container:
+                # Stop button for permutation validation
+                st.button("⏹️ Stop Permutation Validation", key="status_stop_perm_btn", on_click=stop_permutation_validation_callback, help="Click to immediately halt the validation of generated emails.")
+                
+                progress_bar = st.progress(0, text="Starting validation of permutations...")
+                
+                validated_results = []
+                total_generated = len(generated_emails_raw)
+
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    # Pass the sender_email_input (which might be invalid if perform_smtp_checks_for_permutations is False)
+                    # The validate_email function itself handles what to do if from_email is missing/invalid
+                    futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input if perform_smtp_checks_for_permutations else None, enable_company_lookup): email for email in generated_emails_raw}
+                    
+                    for i, future in enumerate(as_completed(futures)):
+                        # Check stop flag periodically
+                        if st.session_state.stop_permutation_validation:
+                            val_status_container.update(label="Permutation Validation Aborted by User! 🛑", state="error", expanded=True)
+                            for f in futures:
+                                f.cancel()
+                            break
                         
-                        for i, future in enumerate(as_completed(futures)):
-                            # Check stop flag periodically
-                            if st.session_state.stop_permutation_validation:
-                                val_status_container.update(label="Permutation Validation Aborted by User! 🛑", state="error", expanded=True)
-                                for f in futures:
-                                    f.cancel()
-                                break
-                            
-                            validated_results.append(future.result())
-                            progress_percent = (i + 1) / total_generated
-                            progress_bar.progress(progress_percent, text=f"Processing generated email {i + 1} of {total_generated}...")
-                    
-                    # Update status based on completion or abortion
-                    if not st.session_state.stop_permutation_validation:
-                        val_status_container.update(label="Permutation Validation Complete! 🎉", state="complete", expanded=False)
-                    
-                # Reset state variables after validation attempt (either complete or aborted)
-                st.session_state.is_permutating_and_validating = False
-                st.session_state.stop_permutation_validation = False
+                        validated_results.append(future.result())
+                        progress_percent = (i + 1) / total_generated
+                        progress_bar.progress(progress_percent, text=f"Processing generated email {i + 1} of {total_generated}...")
+                
+                # Update status based on completion or abortion
+                if not st.session_state.stop_permutation_validation:
+                    val_status_container.update(label="Permutation Validation Complete! 🎉", state="complete", expanded=False)
+                
+            # Reset state variables after validation attempt (either complete or aborted)
+            st.session_state.is_permutating_and_validating = False
+            st.session_state.stop_permutation_validation = False
 
-                # --- Display Validated Permutations ---
-                if validated_results:
-                    df_validated_permutations = pd.DataFrame(validated_results)
-                    
-                    if st.session_state.stop_permutation_validation:
-                        st.warning("Permutation validation was stopped. Displaying partial results:")
-                    else:
-                        st.success("🎉 Permutations generated and validated! Here are the results:")
-
-                    st.subheader("📊 Permutation Validation Summary")
-                    perm_verdict_counts = Counter(df_validated_permutations['Verdict'])
-                    
-                    perm_summary_cols = st.columns(min(len(perm_verdict_counts) + 1, 5))
-                    perm_col_idx = 0
-                    
-                    metric_icons = { # Reusing icons defined earlier
-                        "✅ Valid": "✨", "❌ Invalid": "🚫", "⚠️ Disposable": "🗑️",
-                        "ℹ️ Role-based": "👥", "❌ Invalid Syntax": "📝", "❌ Invalid Domain Format": "🌐"
-                    }
-
-                    for verdict in sorted(perm_verdict_counts.keys()):
-                        count = perm_verdict_counts[verdict]
-                        with perm_summary_cols[perm_col_idx % len(perm_summary_cols)]:
-                            st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
-                        perm_col_idx += 1
-                    
-                    if not df_validated_permutations.empty:
-                        with perm_summary_cols[perm_col_idx % len(perm_summary_cols)]:
-                            avg_perm_score = df_validated_permutations['Score'].mean()
-                            st.metric("⭐ Avg. Score", f"{avg_perm_score:.2f}")
-
-                    st.divider()
-
-                    st.subheader("Detailed Permutation Results & Export")
-                    
-                    perm_all_verdicts = df_validated_permutations['Verdict'].unique().tolist()
-                    perm_filter_options = ["All"] + sorted(perm_all_verdicts)
-                    
-                    perm_selected_verdict = st.selectbox(
-                        "🔍 Filter permutation results by verdict type:", 
-                        perm_filter_options, 
-                        key="perm_filter_select", # Unique key for this selectbox
-                        help="Select 'All' to view all validated permutations, or choose a specific verdict to filter."
-                    )
-
-                    perm_filtered_df = df_validated_permutations
-                    if perm_selected_verdict != "All":
-                        perm_filtered_df = df_validated_permutations[df_validated_permutations['Verdict'] == perm_selected_verdict]
-
-                    st.dataframe(perm_filtered_df, use_container_width=True, height=400)
-
-                    csv_permutations_validated = perm_filtered_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        "⬇️ Download Validated Permutations as CSV",
-                        data=csv_permutations_validated,
-                        file_name="email_permutations_validated.csv",
-                        mime="text/csv",
-                        help="Download the list of generated and validated email permutations."
-                    )
+            # --- Display Validated Permutations ---
+            if validated_results:
+                df_validated_permutations = pd.DataFrame(validated_results)
+                
+                if st.session_state.stop_permutation_validation:
+                    st.warning("Permutation validation was stopped. Displaying partial results:")
                 else:
-                    st.info("No validated permutations to display. Generation or validation might have been stopped prematurely, or no valid inputs were provided.")
+                    st.success("🎉 Permutations generated and validated! Here are the results:")
+
+                st.subheader("📊 Permutation Validation Summary")
+                perm_verdict_counts = Counter(df_validated_permutations['Verdict'])
+                
+                perm_summary_cols = st.columns(min(len(perm_verdict_counts) + 1, 5))
+                perm_col_idx = 0
+                
+                metric_icons = { # Reusing icons defined earlier
+                    "✅ Valid": "✨", "❌ Invalid": "🚫", "⚠️ Disposable": "🗑️",
+                    "ℹ️ Role-based": "👥", "❌ Invalid Syntax": "📝", "❌ Invalid Domain Format": "🌐"
+                }
+
+                for verdict in sorted(perm_verdict_counts.keys()):
+                    count = perm_verdict_counts[verdict]
+                    with perm_summary_cols[perm_col_idx % len(perm_summary_cols)]:
+                        st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
+                    perm_col_idx += 1
+                
+                if not df_validated_permutations.empty:
+                    with perm_summary_cols[perm_col_idx % len(perm_summary_cols)]:
+                        avg_perm_score = df_validated_permutations['Score'].mean()
+                        st.metric("⭐ Avg. Score", f"{avg_perm_score:.2f}")
+
+                st.divider()
+
+                st.subheader("Detailed Permutation Results & Export")
+                
+                perm_all_verdicts = df_validated_permutations['Verdict'].unique().tolist()
+                perm_filter_options = ["All"] + sorted(perm_all_verdicts)
+                
+                perm_selected_verdict = st.selectbox(
+                    "🔍 Filter permutation results by verdict type:", 
+                    perm_filter_options, 
+                    key="perm_filter_select", # Unique key for this selectbox
+                    help="Select 'All' to view all validated permutations, or choose a specific verdict to filter."
+                )
+
+                perm_filtered_df = df_validated_permutations
+                if perm_selected_verdict != "All":
+                    perm_filtered_df = df_validated_permutations[df_validated_permutations['Verdict'] == perm_selected_verdict]
+
+                st.dataframe(perm_filtered_df, use_container_width=True, height=400)
+
+                csv_permutations_validated = perm_filtered_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "⬇️ Download Validated Permutations as CSV",
+                    data=csv_permutations_validated,
+                    file_name="email_permutations_validated.csv",
+                    mime="text/csv",
+                    help="Download the list of generated and validated email permutations."
+                )
+            else:
+                st.info("No validated permutations to display. Generation or validation might have been stopped prematurely, or no valid inputs were provided.")
             
         # This part handles the initial state where no generation/validation has run yet.
         # Ensure the disabled state is managed, as the button itself is conditional now.
