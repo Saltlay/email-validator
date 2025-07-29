@@ -1,6 +1,3 @@
-# Create a Streamlit-compatible version of the email validator app
-
-streamlit_code = '''
 import re
 import smtplib
 import dns.resolver
@@ -23,7 +20,7 @@ mx_cache = {}
 
 # --- Validators ---
 def is_valid_syntax(email):
-    return re.match(r"^[\\w\\.-]+@[\\w\\.-]+\\.\\w+$", email) is not None
+    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
 
 def is_disposable(email):
     domain = email.split('@')[1].lower()
@@ -98,7 +95,7 @@ st.write("Enter a list of email addresses separated by commas or newlines:")
 user_input = st.text_area("Emails", height=200)
 
 if st.button("Validate"):
-    emails = [e.strip() for e in user_input.replace(',', '\\n').split('\\n') if e.strip()]
+    emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
     if not emails:
         st.warning("Please enter at least one email address.")
     else:
@@ -110,10 +107,3 @@ if st.button("Validate"):
             st.dataframe(df)
             csv = df.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV", data=csv, file_name="results.csv", mime="text/csv")
-'''
-
-# Save to a file
-with open("/mnt/data/streamlit_email_validator.py", "w") as f:
-    f.write(streamlit_code.strip())
-
-"/mnt/data/streamlit_email_validator.py"
