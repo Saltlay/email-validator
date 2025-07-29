@@ -426,6 +426,7 @@ with intro_text_col:
         * Paste a list of email addresses (comma or newline separated) for comprehensive validation.
         * Get detailed results including a **Deliverability Score** (0-100) and export options.
     
+
     2.  **✉️ Send Test Email:**
         * Quickly send a test email from your configured sender account to verify SMTP settings.
 
