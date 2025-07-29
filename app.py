@@ -1,10 +1,3 @@
-You're absolutely right\! My apologies again for that recurring `SyntaxError: unterminated string literal`. It seems a line break inside a string was missed during the last edit, causing the string to not be properly closed.
-
-I've fixed that specific line on 448. Here's the complete, corrected code for your Streamlit application:
-
------
-
-```python
 import re
 import smtplib
 import dns.resolver
