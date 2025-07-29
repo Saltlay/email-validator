@@ -3,13 +3,13 @@ import smtplib
 import dns.resolver
 import pandas as pd
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor, as_completed # Import as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 import whois
 from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
 import tldextract
 import yagmail
-import time # Used for potential future debugging/simulating delays, not actively used in validation logic speed
+import time
 
 # --- Configs ---
 DEFAULT_DISPOSABLE_DOMAINS = {
@@ -232,6 +232,83 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
         
         return False, f"Failed to send email: An unexpected error occurred: {error_message}"
 
+# --- New Module: Email Permutator ---
+def generate_email_permutations(first_name, last_name, domain, nickname=None):
+    """
+    Generates common email address permutations for a given name and domain.
+    Includes options for nicknames.
+    """
+    first = first_name.lower().strip()
+    last = last_name.lower().strip()
+    dom = domain.lower().strip()
+    nick = nickname.lower().strip() if nickname else None
+
+    # Remove non-alphanumeric characters that might cause issues in email prefixes
+    first = re.sub(r'[^a-z0-9]', '', first)
+    last = re.sub(r'[^a-z0-9]', '', last)
+    if nick:
+        nick = re.sub(r'[^a-z0-9]', '', nick)
+
+    permutations = set()
+
+    # Common patterns
+    if first and last:
+        permutations.add(f"{first}.{last}@{dom}")
+        permutations.add(f"{first}{last}@{dom}")
+        permutations.add(f"{first}_{last}@{dom}")
+        permutations.add(f"{last}.{first}@{dom}")
+        permutations.add(f"{last}{first}@{dom}")
+        permutations.add(f"{last}_{first}@{dom}")
+
+        # Initial + Last Name
+        if len(first) > 0:
+            permutations.add(f"{first[0]}.{last}@{dom}")
+            permutations.add(f"{first[0]}{last}@{dom}")
+            permutations.add(f"{first[0]}_{last}@{dom}")
+        
+        # First Name + Last Initial
+        if len(last) > 0:
+            permutations.add(f"{first}.{last[0]}@{dom}")
+            permutations.add(f"{first}{last[0]}@{dom}")
+            permutations.add(f"{first}_{last[0]}@{dom}")
+        
+        # Initial + Initial
+        if len(first) > 0 and len(last) > 0:
+            permutations.add(f"{first[0]}.{last[0]}@{dom}")
+            permutations.add(f"{first[0]}{last[0]}@{dom}")
+            permutations.add(f"{first[0]}_{last[0]}@{dom}")
+
+    # First Name Only
+    if first:
+        permutations.add(f"{first}@{dom}")
+    
+    # Last Name Only
+    if last:
+        permutations.add(f"{last}@{dom}")
+
+    # Nickname (if provided)
+    if nick:
+        permutations.add(f"{nick}@{dom}")
+        if first and nick:
+            permutations.add(f"{nick}.{last}@{dom}")
+            permutations.add(f"{first}.{nick}@{dom}")
+            permutations.add(f"{nick}{last}@{dom}")
+            permutations.add(f"{first}{nick}@{dom}")
+            permutations.add(f"{nick}_{last}@{dom}")
+            permutations.add(f"{first}_{nick}@{dom}")
+        if last and nick:
+            permutations.add(f"{last}.{nick}@{dom}")
+            permutations.add(f"{nick}.{first}@{dom}")
+
+    # Remove any empty strings or invalid formats that might have slipped in
+    # And ensure they adhere to basic email format (contain @ and a domain part)
+    final_emails = set()
+    for email in permutations:
+        if email and '@' in email and '.' in email.split('@')[1]:
+            final_emails.add(email)
+
+    return sorted(list(final_emails))
+
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Email Validator", page_icon="✅", layout="wide")
@@ -246,6 +323,7 @@ Welcome to the **Email Validator & Sender Tool**! This application is designed t
 * **Disposable & Role-Based Detection:** Automatically flags emails from temporary services or generic addresses like `admin@` or `info@`.
 * **Optional Company/Organization Lookup:** Attempts to identify the company or organization associated with the email's domain using public WHOIS data. This feature can be toggled On/Off in settings as its reliability varies.
 * **Test Email Sending:** A built-in utility to send test emails, allowing you to verify your SMTP settings and ensure your messages can be sent successfully from within the app.
+* **Email Permutator:** Generate common email address combinations for a given name and domain, including nicknames, to help you guess potential contact emails.
 * **Customizable Configurations:** Easily adjust disposable domains, role-based prefixes, and SMTP sender details to match your specific needs.
 """)
 
@@ -257,7 +335,7 @@ intro_text_col, config_col = st.columns([3, 1])
 with intro_text_col:
     st.subheader("🚀 Get Started")
     st.markdown("""
-    This tool offers two primary functionalities, accessible via the tabs below:
+    This tool offers three primary functionalities, accessible via the tabs below:
     
     1.  **⚡ Email Validator:**
         * Paste a list of email addresses (comma or newline separated).
@@ -268,12 +346,15 @@ with intro_text_col:
     2.  **✉️ Send Test Email:**
         * Use this tab to quickly send a test email from your configured sender account.
         * It's perfect for verifying your SMTP settings and ensuring your email sending capabilities are working as expected.
+
+    3.  **🧩 Email Permutator:**
+        * Enter a person's first name, last name, and a domain. Optionally, add a nickname.
+        * The tool will generate a comprehensive list of common email address combinations for that individual within the specified domain. This is useful for guessing professional email addresses.
     
     **Important:** Please review and set up your **Configuration Settings** in the expander on the right. This includes your sender email and password, which are crucial for SMTP checks and sending test emails.
     """)
 
 with config_col:
-    # Changed expanded=False to expanded=True for initial visibility
     with st.expander("⚙️ Configuration Settings", expanded=True):
         st.info("Adjust the parameters for email validation and sending. Your changes will apply to all subsequent actions.")
         
@@ -359,8 +440,8 @@ if 'is_validating' not in st.session_state:
 def stop_validation_callback():
     st.session_state.stop_validation = True
 
-# --- Main Tabs for Validator and Sender ---
-tab_validator, tab_sender = st.tabs(["⚡ Email Validator", "✉️ Send Test Email"])
+# --- Main Tabs for Validator, Sender, and Permutator ---
+tab_validator, tab_sender, tab_permutator = st.tabs(["⚡ Email Validator", "✉️ Send Test Email", "🧩 Email Permutator"])
 
 # --- Email Validator Tab Content ---
 with tab_validator:
@@ -377,34 +458,28 @@ with tab_validator:
         key="email_input"
     )
 
-    # Place start and stop buttons side-by-side
     col_start_btn, col_stop_btn = st.columns([1, 1])
     
-    # --- Start Button Logic ---
     if col_start_btn.button("✅ Validate Emails", use_container_width=True, type="primary", disabled=st.session_state.is_validating):
-        st.session_state.stop_validation = False # Reset stop flag for new validation run
-        st.session_state.is_validating = True # Set validating state
+        st.session_state.stop_validation = False
+        st.session_state.is_validating = True
 
         if not from_email_valid:
             st.error("🚨 Cannot proceed: Your Sender Email (in Configuration) is invalid. Please correct it.")
-            st.session_state.is_validating = False # Reset state
+            st.session_state.is_validating = False
         else:
             raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
             
             if not raw_emails:
                 st.warning("☝️ Please enter at least one email address to validate.")
-                st.session_state.is_validating = False # Reset state
+                st.session_state.is_validating = False
             else:
                 unique_emails = list(set(raw_emails))
                 if len(raw_emails) != len(unique_emails):
                     st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
                 emails_to_validate = unique_emails
                 
-                # --- Stop Button inside st.status ---
-                # The stop button will be placed inside the status container for visual association
                 with st.status(f"Validating {len(emails_to_validate)} email(s)... Please wait.", expanded=True) as status_container:
-                    # Place the Stop button directly inside the status container
-                    # This button will be shown only while the status container is active.
                     st.button("⏹️ Stop Validation", key="status_stop_btn", on_click=stop_validation_callback, help="Click to immediately halt the current validation process.")
                     
                     progress_bar = st.progress(0, text="Starting validation...")
@@ -418,7 +493,6 @@ with tab_validator:
                         for i, future in enumerate(as_completed(futures)):
                             if st.session_state.stop_validation:
                                 status_container.update(label="Validation Aborted by User!", state="error", expanded=True)
-                                # Cancel remaining futures
                                 for f in futures:
                                     f.cancel()
                                 break
@@ -430,11 +504,9 @@ with tab_validator:
                     if not st.session_state.stop_validation:
                         status_container.update(label="Validation Complete!", state="complete", expanded=False)
                     
-                # Reset state variables after validation attempt (either complete or aborted)
                 st.session_state.is_validating = False
                 st.session_state.stop_validation = False 
 
-                # Display results only if some results were collected
                 if results:
                     df = pd.DataFrame(results)
                     
@@ -443,7 +515,6 @@ with tab_validator:
                     else:
                         st.success("🎉 Validation complete! Here are your results:")
 
-                    # --- Summary Statistics ---
                     st.subheader("📊 Validation Summary")
                     verdict_counts = Counter(df['Verdict'])
                     
@@ -471,7 +542,6 @@ with tab_validator:
 
                     st.divider()
 
-                    # --- Filtering Results ---
                     st.subheader("Detailed Results & Export")
                     
                     all_verdicts = df['Verdict'].unique().tolist()
@@ -516,7 +586,6 @@ with tab_sender:
     test_subject = st.text_input("Subject:", key="test_subject", placeholder="Test Email from Streamlit App")
     test_body = st.text_area("Email Body:", key="test_body", height=150, placeholder="Hello, this is a test email sent from the Streamlit Email Tool!")
 
-    # Disable send button if sender email/password are not provided/valid
     can_send_email = from_email_valid and bool(sender_password_input) and bool(recipient_test_email) and bool(test_subject) and bool(test_body)
 
     if st.button("🚀 Send Test Email", type="primary", disabled=not can_send_email):
@@ -534,6 +603,67 @@ with tab_sender:
                 st.success(f"✅ {message}")
             else:
                 st.error(f"❌ {message}")
+
+# --- Email Permutator Tab Content ---
+with tab_permutator:
+    st.header("🧩 Email Permutator")
+    st.info("""
+        Generate a list of common email address combinations for a person based on their name and domain.
+        This tool is useful for guessing professional email addresses for outreach.
+        """)
+    st.warning("⚠️ **Important:** This tool generates *possible* email addresses, not *verified* ones. Always use the **Email Validator** tab to check the deliverability of generated emails before using them.")
+
+    col_name1, col_name2 = st.columns(2)
+    with col_name1:
+        perm_first_name = st.text_input("First Name:", key="perm_first_name", placeholder="John")
+    with col_name2:
+        perm_last_name = st.text_input("Last Name:", key="perm_last_name", placeholder="Doe")
+    
+    perm_nickname = st.text_input("Nickname (Optional):", key="perm_nickname", placeholder="Johnny")
+    perm_domain = st.text_input("Domain (e.g., example.com):", key="perm_domain", placeholder="company.com")
+
+    if st.button("✨ Generate Emails", type="primary"):
+        if not perm_first_name and not perm_last_name and not perm_nickname:
+            st.warning("Please enter at least a First Name, Last Name, or Nickname to generate permutations.")
+        elif not perm_domain:
+            st.warning("Please enter a Domain to generate permutations.")
+        else:
+            with st.spinner("Generating permutations..."):
+                generated_emails = generate_email_permutations(
+                    first_name=perm_first_name,
+                    last_name=perm_last_name,
+                    domain=perm_domain,
+                    nickname=perm_nickname if perm_nickname else None
+                )
+            
+            if generated_emails:
+                st.success(f"Generated {len(generated_emails)} possible email combinations:")
+                
+                # Display in a dataframe
+                df_permutations = pd.DataFrame({"Possible Email": generated_emails})
+                st.dataframe(df_permutations, use_container_width=True, height=300)
+
+                # Display in a text area for easy copying
+                st.subheader("Copy Generated Emails")
+                st.text_area(
+                    "Copy these emails:",
+                    value="\n".join(generated_emails),
+                    height=200,
+                    key="generated_emails_text_area"
+                )
+
+                # Download button
+                csv_permutations = df_permutations.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "⬇️ Download Generated Emails as CSV",
+                    data=csv_permutations,
+                    file_name="email_permutations.csv",
+                    mime="text/csv",
+                    help="Download the list of generated email permutations."
+                )
+                st.info("Remember to use the **Email Validator** tab to check the deliverability of these generated emails!")
+            else:
+                st.warning("No email combinations could be generated with the provided details. Please check your input.")
 
 st.divider()
 st.markdown("Developed with ❤️ with Streamlit and community libraries.")
