@@ -2,3 +2,5 @@ streamlit
 pandas
 dnspython
 python-whois
+email_validator  # Add this line
+tldextract       # Add this line
