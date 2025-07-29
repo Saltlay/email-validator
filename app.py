@@ -8,7 +8,7 @@ from collections import Counter
 import whois
 from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
 import tldextract
-import yagmail # New import for email sending
+import yagmail
 
 # --- Configs ---
 DEFAULT_DISPOSABLE_DOMAINS = {
@@ -19,8 +19,8 @@ DEFAULT_ROLE_BASED_PREFIXES = {
     "admin", "support", "info", "sales", "contact", "webmaster", "help"
 }
 DEFAULT_FROM_EMAIL = "check@yourdomain.com"
-DEFAULT_SMTP_HOST = "smtp.gmail.com" # Default for yagmail
-DEFAULT_SMTP_PORT = 587 # Default TLS port
+DEFAULT_SMTP_HOST = "smtp.gmail.com"
+DEFAULT_SMTP_PORT = 587
 
 # DNS MX and WHOIS caching
 mx_cache = {}
@@ -110,32 +110,36 @@ def get_domain_info(registrable_domain):
     whois_cache[registrable_domain] = company_name
     return company_name
 
-# --- New: Scoring Function ---
+# --- Scoring Function ---
 def calculate_deliverability_score(result):
-    score = 100 # Start with a perfect score
+    score = 100
 
     if not result["Syntax Valid"]:
-        score -= 100 # Unusable
-    elif result["Verdict"] == "❌ Invalid Domain Format": # Specific syntax/domain issue
+        score -= 100
+    elif result["Verdict"] == "❌ Invalid Domain Format":
         score -= 95
     elif result["Disposable"]:
-        score -= 90 # High penalty for disposable
+        score -= 90
     elif result["Role-based"]:
-        score -= 30 # Moderate penalty for role-based (depends on use case)
-    else: # If syntax is valid and not disposable/role-based
+        score -= 30
+    else:
         if not result["MX Record"]:
-            score -= 70 # Significant penalty for no MX record
+            score -= 70
         if not result["SMTP Valid"]:
-            score -= 50 # Penalty for SMTP failure (mailbox likely doesn't exist or highly protected)
+            score -= 50
     
-    # Optional: Minor penalty for lack of clear company info
+    # Only penalize for company info lookup if it was enabled and failed/was private
     if result["Company/Org"] in ["Private/No Org Info", "Lookup Failed", "N/A (Invalid Syntax)", "N/A (Invalid Domain)"]:
-        score -= 5
-
-    return max(0, score) # Ensure score doesn't go below 0
+        # If company lookup was disabled by user, don't penalize.
+        # This requires knowing if it was enabled, which we'll pass to validate_email later.
+        pass # The logic here should consider the 'enable_company_lookup' flag if we want to penalize.
+             # For simplicity, we'll keep it as is, or remove this part of scoring.
+             # Let's remove this score part for now if it's optional and often fails.
+    
+    return max(0, score)
 
 # --- Main Checker (Modified) ---
-def validate_email(email, disposable_domains, role_based_prefixes, from_email):
+def validate_email(email, disposable_domains, role_based_prefixes, from_email, enable_company_lookup):
     email = email.strip()
     
     result = {
@@ -148,13 +152,13 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
         "Role-based": False,
         "SMTP Valid": False,
         "Verdict": "❌ Invalid",
-        "Score": 0 # New field for score
+        "Score": 0
     }
 
     if not is_valid_syntax(email):
         result["Verdict"] = "❌ Invalid Syntax"
         result["Company/Org"] = "N/A (Invalid Syntax)"
-        result["Score"] = calculate_deliverability_score(result) # Calculate score even for early exit
+        result["Score"] = calculate_deliverability_score(result)
         return result
     result["Syntax Valid"] = True
     
@@ -168,9 +172,14 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
         result["Score"] = calculate_deliverability_score(result)
         return result
 
+    # --- Conditional Company Lookup ---
+    if enable_company_lookup:
+        result["Company/Org"] = get_domain_info(registrable_domain)
+    else:
+        result["Company/Org"] = "Lookup Disabled" # Indicate it was skipped
+
     result["Disposable"] = is_disposable(registrable_domain, disposable_domains)
     result["Role-based"] = is_role_based(local_part, role_based_prefixes)
-    result["Company/Org"] = get_domain_info(registrable_domain)
     result["MX Record"] = has_mx_record(registrable_domain)
 
     if result["MX Record"] and not result["Disposable"]:
@@ -188,25 +197,20 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     result["Score"] = calculate_deliverability_score(result)
     return result
 
-# --- New: Email Sending Function ---
+# --- Email Sending Function ---
 def send_email_via_yagmail(sender_email, sender_password, recipient_email, subject, body, smtp_host, smtp_port):
     try:
         if not sender_email or not sender_password or not recipient_email or not subject or not body:
             return False, "All sender email, password, recipient, subject, and body fields are required."
 
         if "@gmail.com" in sender_email.lower() and "@" not in sender_password:
-             # Basic check to hint at app password if it looks like a regular password for Gmail
              st.warning("For Gmail, if you have 2FA enabled, you might need an **App Password** instead of your regular password. See Gmail security settings.")
 
-        # Initialize yagmail with custom SMTP settings for non-Gmail or specific ports
-        # yagmail automatically configures for Gmail if host/port aren't specified and it's a gmail address
         yag = yagmail.SMTP(
             user=sender_email,
             password=sender_password,
             host=smtp_host if smtp_host else None,
             port=smtp_port if smtp_port else None,
-            # Uncomment for debugging:
-            # smtp_debug=True
         )
         yag.send(
             to=recipient_email,
@@ -215,7 +219,6 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
         )
         return True, "Email sent successfully!"
     except yagmail.YagmailError as e:
-        # Catch specific yagmail errors for better user feedback
         if "SMTPAuthenticationError" in str(e):
             return False, f"Authentication failed. Check your sender email and password (or App Password for Gmail). Error: {e}"
         elif "SMTPConnectError" in str(e):
@@ -230,7 +233,15 @@ st.set_page_config(page_title="Email Validator", page_icon="✅", layout="wide")
 st.title("📧 Comprehensive Email Validator & Sender Tool")
 
 st.markdown("""
-Welcome to the **Email Validator & Sender Tool**! This application helps you verify email addresses based on several criteria and even send test emails.
+Welcome to the **Email Validator & Sender Tool**! This application is designed to help you ensure the quality and deliverability of your email lists.
+
+**Key Features:**
+* **Enhanced Email Validation:** Utilizes strict RFC-compliant syntax checks, accurate domain resolution (identifying the true registrable domain), MX record verification, and direct SMTP mailbox existence checks.
+* **Deliverability Scoring:** Each validated email receives a numerical score (0-100) indicating its likely deliverability, helping you prioritize or segment your email lists.
+* **Disposable & Role-Based Detection:** Automatically flags emails from temporary services or generic addresses like `admin@` or `info@`.
+* **Optional Company/Organization Lookup:** Attempts to identify the company or organization associated with the email's domain using public WHOIS data. This feature can be toggled On/Off in settings as its reliability varies.
+* **Test Email Sending:** A built-in utility to send test emails, allowing you to verify your SMTP settings and ensure your messages can be sent successfully from within the app.
+* **Customizable Configurations:** Easily adjust disposable domains, role-based prefixes, and SMTP sender details to match your specific needs.
 """)
 
 st.divider()
@@ -239,9 +250,24 @@ st.divider()
 intro_text_col, config_col = st.columns([3, 1])
 
 with intro_text_col:
-    st.subheader("Get Started")
-    st.write("Input email addresses for validation or use the 'Send Test Email' feature. Check 'Configuration Settings' for critical sender details.")
-    st.warning("⚠️ **Important Note on 'Company/Org' Lookup:** This feature relies on public WHOIS data, which can often be private, incomplete, or inaccurate. Results for this column are 'best effort' and not guaranteed.")
+    st.subheader("🚀 Get Started")
+    st.markdown("""
+    This tool offers two primary functionalities, accessible via the tabs below:
+    
+    1.  **⚡ Email Validator:**
+        * Paste a list of email addresses (comma or newline separated).
+        * The tool will process each email, performing a series of checks for syntax, domain validity, MX records, and SMTP deliverability.
+        * You'll receive a detailed table of results, including a **Deliverability Score** (0-100), where higher scores indicate a greater likelihood of successful delivery.
+        * Results can be filtered by verdict and downloaded as a CSV.
+    
+    2.  **✉️ Send Test Email:**
+        * Use this tab to quickly send a test email from your configured sender account.
+        * It's perfect for verifying your SMTP settings and ensuring your email sending capabilities are working as expected.
+    
+    **Important:** Please review and set up your **Configuration Settings** in the expander on the right. This includes your sender email and password, which are crucial for SMTP checks and sending test emails.
+    """)
+    # The WHOIS warning is now more specific within the config/email validator sections.
+    # Removed general warning here to avoid redundancy.
 
 with config_col:
     with st.expander("⚙️ Configuration Settings", expanded=False):
@@ -257,12 +283,11 @@ with config_col:
         )
         sender_password_input = st.text_input(
             "Sender Email Password / App Password:",
-            type="password", # Mask the password
+            type="password",
             key="sender_password_input",
             help="For Gmail with 2FA, use an **App Password** (Google Account -> Security -> App Passwords)."
         )
         
-        # Optional: Custom SMTP Host/Port
         st.markdown("---")
         st.write("**Advanced SMTP Settings (for non-Gmail or custom servers)**")
         smtp_host_input = st.text_input(
@@ -283,7 +308,18 @@ with config_col:
 
         st.markdown("---")
         st.subheader("Validation Specific Settings")
-        st.write("Customize lists for email classification.")
+        st.write("Customize lists for email classification and enable/disable optional lookups.")
+
+        # --- New: Toggle for Company Lookup ---
+        enable_company_lookup = st.checkbox(
+            "Enable Company/Organization Lookup (WHOIS)",
+            value=True, # Default to on
+            help="Toggle this to enable/disable retrieving company information via WHOIS. Disable if you find results are consistently 'Private' or 'N/A' to speed up validation."
+        )
+        if not enable_company_lookup:
+            st.info("Company/Organization Lookup is currently disabled. The 'Company/Org' column will show 'Lookup Disabled'.")
+
+
         disposable_input = st.text_area(
             "Disposable Domains (comma or newline separated):",
             value=", ".join(DEFAULT_DISPOSABLE_DOMAINS),
@@ -324,7 +360,7 @@ with tab_validator:
     col_btn, col_spacer = st.columns([1, 4])
     
     if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary"):
-        if not from_email_valid: # Check sender email validity from config
+        if not from_email_valid:
             st.error("🚨 Cannot proceed: Your Sender Email (in Configuration) is invalid. Please correct it.")
         else:
             raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
@@ -344,7 +380,8 @@ with tab_validator:
                     total_emails = len(emails_to_validate)
 
                     with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input) for email in emails_to_validate]
+                        # Pass the new enable_company_lookup flag to validate_email
+                        futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup) for email in emails_to_validate]
                         for i, future in enumerate(futures):
                             results.append(future.result())
                             progress_percent = (i + 1) / total_emails
@@ -378,7 +415,6 @@ with tab_validator:
                         st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
                     col_idx += 1
                 
-                # Display average score (if any emails were processed)
                 if not df.empty:
                     avg_score = df['Score'].mean()
                     st.metric("⭐ Average Deliverability Score", f"{avg_score:.2f}")
@@ -441,8 +477,8 @@ with tab_sender:
                     recipient_test_email, 
                     test_subject, 
                     test_body,
-                    smtp_host_input, # Pass custom host
-                    smtp_port_input  # Pass custom port
+                    smtp_host_input,
+                    smtp_port_input
                 )
                 if success:
                     st.success(f"✅ {message}")
