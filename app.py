@@ -111,5 +111,4 @@ if __name__ == "__main__":
     print("📥 Enter email addresses (comma or newline separated):")
     raw_input = input("> ").strip()
     emails = [e.strip() for e in raw_input.replace(',', '\n').split('\n') if e.strip()]
-
     run_bulk_checker(emails)
