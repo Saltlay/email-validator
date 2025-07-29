@@ -5,11 +5,10 @@ import pandas as pd
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
-import whois # Ensure you have `pip install python-whois`
-
-# New imports for enhanced validation
+import whois
 from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
-import tldextract # Ensure you have `pip install tldextract`
+import tldextract
+import yagmail # New import for email sending
 
 # --- Configs ---
 DEFAULT_DISPOSABLE_DOMAINS = {
@@ -20,6 +19,8 @@ DEFAULT_ROLE_BASED_PREFIXES = {
     "admin", "support", "info", "sales", "contact", "webmaster", "help"
 }
 DEFAULT_FROM_EMAIL = "check@yourdomain.com"
+DEFAULT_SMTP_HOST = "smtp.gmail.com" # Default for yagmail
+DEFAULT_SMTP_PORT = 587 # Default TLS port
 
 # DNS MX and WHOIS caching
 mx_cache = {}
@@ -32,30 +33,23 @@ def get_registrable_domain(email_or_domain_string):
     """
     try:
         if '@' in email_or_domain_string:
-            # If it's an email, extract domain part first
             domain_part = email_or_domain_string.split('@')[1]
         else:
-            # If it's already a domain string
             domain_part = email_or_domain_string
 
         extracted = tldextract.extract(domain_part)
-        # Combine domain and suffix to get the registrable domain
         if extracted.domain and extracted.suffix:
             return f"{extracted.domain}.{extracted.suffix}"
-        elif extracted.domain: # For domains without a public suffix (e.g., local network names)
+        elif extracted.domain:
             return extracted.domain
         else:
-            return None # Cannot extract a meaningful registrable domain
+            return None
     except Exception:
         return None
 
-# --- Validators (Updated) ---
+# --- Validators ---
 def is_valid_syntax(email):
-    """
-    Uses email_validator to check syntax strictly according to RFCs.
-    """
     try:
-        # check_deliverability=False because we handle MX/SMTP separately
         validate_syntax_strict(email, check_deliverability=False)
         return True
     except EmailNotValidError:
@@ -93,12 +87,11 @@ def verify_smtp(email, registrable_domain, from_email):
     except Exception:
         return False
 
-# --- Get Domain Info (Updated to use registrable_domain) ---
 def get_domain_info(registrable_domain):
     if registrable_domain in whois_cache:
         return whois_cache[registrable_domain]
     
-    company_name = "N/A" # Default if not found or private
+    company_name = "N/A"
     
     try:
         w = whois.whois(registrable_domain)
@@ -112,63 +105,77 @@ def get_domain_info(registrable_domain):
             company_name = "Private/No Org Info"
             
     except Exception:
-        company_name = "Lookup Failed" # More specific error
+        company_name = "Lookup Failed"
         
     whois_cache[registrable_domain] = company_name
     return company_name
 
-# --- Main Checker (Modified significantly) ---
+# --- New: Scoring Function ---
+def calculate_deliverability_score(result):
+    score = 100 # Start with a perfect score
+
+    if not result["Syntax Valid"]:
+        score -= 100 # Unusable
+    elif result["Verdict"] == "❌ Invalid Domain Format": # Specific syntax/domain issue
+        score -= 95
+    elif result["Disposable"]:
+        score -= 90 # High penalty for disposable
+    elif result["Role-based"]:
+        score -= 30 # Moderate penalty for role-based (depends on use case)
+    else: # If syntax is valid and not disposable/role-based
+        if not result["MX Record"]:
+            score -= 70 # Significant penalty for no MX record
+        if not result["SMTP Valid"]:
+            score -= 50 # Penalty for SMTP failure (mailbox likely doesn't exist or highly protected)
+    
+    # Optional: Minor penalty for lack of clear company info
+    if result["Company/Org"] in ["Private/No Org Info", "Lookup Failed", "N/A (Invalid Syntax)", "N/A (Invalid Domain)"]:
+        score -= 5
+
+    return max(0, score) # Ensure score doesn't go below 0
+
+# --- Main Checker (Modified) ---
 def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     email = email.strip()
     
-    # Initialize result dictionary
     result = {
         "Email": email,
-        "Domain": "N/A", # Will be updated with registrable domain
-        "Company/Org": "N/A (Pending)", # Initial status
+        "Domain": "N/A",
+        "Company/Org": "N/A (Pending)",
         "Syntax Valid": False,
         "MX Record": False,
         "Disposable": False,
         "Role-based": False,
         "SMTP Valid": False,
-        "Verdict": "❌ Invalid"
+        "Verdict": "❌ Invalid",
+        "Score": 0 # New field for score
     }
 
-    # 1. Syntax Validation (using email_validator)
     if not is_valid_syntax(email):
         result["Verdict"] = "❌ Invalid Syntax"
         result["Company/Org"] = "N/A (Invalid Syntax)"
+        result["Score"] = calculate_deliverability_score(result) # Calculate score even for early exit
         return result
     result["Syntax Valid"] = True
     
-    # Extract domain and prefix after syntax is confirmed
     local_part, full_domain_from_email = email.split('@')
     registrable_domain = get_registrable_domain(full_domain_from_email)
     result["Domain"] = registrable_domain if registrable_domain else full_domain_from_email
 
-    # If registrable_domain couldn't be determined, it's problematic
     if not registrable_domain:
         result["Verdict"] = "❌ Invalid Domain Format"
         result["Company/Org"] = "N/A (Invalid Domain)"
+        result["Score"] = calculate_deliverability_score(result)
         return result
 
-    # 2. Check for Disposable and Role-based
     result["Disposable"] = is_disposable(registrable_domain, disposable_domains)
     result["Role-based"] = is_role_based(local_part, role_based_prefixes)
-
-    # 3. WHOIS Company Lookup (using registrable_domain)
     result["Company/Org"] = get_domain_info(registrable_domain)
-
-    # 4. MX Record Check (using registrable_domain)
     result["MX Record"] = has_mx_record(registrable_domain)
 
-    # 5. SMTP Verification (only if MX record exists and not disposable by default)
-    # The current logic will try SMTP even for role-based/disposable if MX exists
-    # You might want to skip SMTP for disposable/role-based if they are "final" verdicts for you.
-    if result["MX Record"] and not result["Disposable"]: # Can modify this condition
-        result["SMTP Valid"] = verify_smtp(email, registrable_domain, from_email) # Pass registrable domain for server.helo
+    if result["MX Record"] and not result["Disposable"]:
+        result["SMTP Valid"] = verify_smtp(email, registrable_domain, from_email)
 
-    # Final Verdict Logic (refined order)
     if result["Disposable"]:
         result["Verdict"] = "⚠️ Disposable"
     elif result["Role-based"]:
@@ -176,24 +183,54 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     elif all([result["Syntax Valid"], result["MX Record"], result["SMTP Valid"]]):
         result["Verdict"] = "✅ Valid"
     else:
-        # Catch-all for other failures (e.g., no MX record, SMTP verification failed)
-        result["Verdict"] = "❌ Invalid" 
+        result["Verdict"] = "❌ Invalid"
 
+    result["Score"] = calculate_deliverability_score(result)
     return result
+
+# --- New: Email Sending Function ---
+def send_email_via_yagmail(sender_email, sender_password, recipient_email, subject, body, smtp_host, smtp_port):
+    try:
+        if not sender_email or not sender_password or not recipient_email or not subject or not body:
+            return False, "All sender email, password, recipient, subject, and body fields are required."
+
+        if "@gmail.com" in sender_email.lower() and "@" not in sender_password:
+             # Basic check to hint at app password if it looks like a regular password for Gmail
+             st.warning("For Gmail, if you have 2FA enabled, you might need an **App Password** instead of your regular password. See Gmail security settings.")
+
+        # Initialize yagmail with custom SMTP settings for non-Gmail or specific ports
+        # yagmail automatically configures for Gmail if host/port aren't specified and it's a gmail address
+        yag = yagmail.SMTP(
+            user=sender_email,
+            password=sender_password,
+            host=smtp_host if smtp_host else None,
+            port=smtp_port if smtp_port else None,
+            # Uncomment for debugging:
+            # smtp_debug=True
+        )
+        yag.send(
+            to=recipient_email,
+            subject=subject,
+            contents=body
+        )
+        return True, "Email sent successfully!"
+    except yagmail.YagmailError as e:
+        # Catch specific yagmail errors for better user feedback
+        if "SMTPAuthenticationError" in str(e):
+            return False, f"Authentication failed. Check your sender email and password (or App Password for Gmail). Error: {e}"
+        elif "SMTPConnectError" in str(e):
+            return False, f"Could not connect to SMTP server. Check host/port or internet connection. Error: {e}"
+        return False, f"Failed to send email: {e}"
+    except Exception as e:
+        return False, f"An unexpected error occurred: {e}"
+
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Email Validator", page_icon="✅", layout="wide")
-st.title("📧 Comprehensive Email Validator Tool")
+st.title("📧 Comprehensive Email Validator & Sender Tool")
 
 st.markdown("""
-Welcome to the **Email Validator Tool**! This application helps you verify email addresses based on several criteria, including:
-* **Enhanced Syntax:** Strict RFC-compliant email format check (e.g., `user@domain.com`).
-* **Accurate Domain Resolution:** Correctly identifies the registrable domain (e.g., `example.com` from `mail.example.com`).
-* **MX Record:** Verifies if the domain has Mail Exchange records (necessary for receiving emails).
-* **SMTP Check:** Attempts to confirm if the email inbox actually exists (the most reliable but also slowest check).
-* **Disposable Email Detection:** Identifies emails from temporary/disposable email services.
-* **Role-based Email Detection:** Flags generic emails like `admin@` or `support@`.
-* **Company/Organization Lookup:** Attempts to retrieve organization name via public WHOIS data.
+Welcome to the **Email Validator & Sender Tool**! This application helps you verify email addresses based on several criteria and even send test emails.
 """)
 
 st.divider()
@@ -203,142 +240,214 @@ intro_text_col, config_col = st.columns([3, 1])
 
 with intro_text_col:
     st.subheader("Get Started")
-    st.write("Input one or more email addresses below. Separate them with commas or newlines. Click 'Validate Emails' to begin.")
+    st.write("Input email addresses for validation or use the 'Send Test Email' feature. Check 'Configuration Settings' for critical sender details.")
     st.warning("⚠️ **Important Note on 'Company/Org' Lookup:** This feature relies on public WHOIS data, which can often be private, incomplete, or inaccurate. Results for this column are 'best effort' and not guaranteed.")
 
 with config_col:
     with st.expander("⚙️ Configuration Settings", expanded=False):
-        st.info("Adjust the parameters for email validation. Your changes will apply to all subsequent validation runs.")
+        st.info("Adjust the parameters for email validation and sending. Your changes will apply to all subsequent actions.")
         
-        st.subheader("Disposable Domains")
-        st.write("Emails from these domains will be flagged as 'Disposable'.")
+        st.subheader("SMTP Sender Details")
+        st.write("This email and password will be used for both SMTP verification and sending test emails.")
+        sender_email_input = st.text_input(
+            "Your Sender Email (e.g., yourname@gmail.com):",
+            value=DEFAULT_FROM_EMAIL,
+            key="sender_email_input",
+            help="This is the 'From' address for verification and sending."
+        )
+        sender_password_input = st.text_input(
+            "Sender Email Password / App Password:",
+            type="password", # Mask the password
+            key="sender_password_input",
+            help="For Gmail with 2FA, use an **App Password** (Google Account -> Security -> App Passwords)."
+        )
+        
+        # Optional: Custom SMTP Host/Port
+        st.markdown("---")
+        st.write("**Advanced SMTP Settings (for non-Gmail or custom servers)**")
+        smtp_host_input = st.text_input(
+            "SMTP Host (e.g., smtp.gmail.com):",
+            value=DEFAULT_SMTP_HOST,
+            key="smtp_host_input"
+        )
+        smtp_port_input = st.number_input(
+            "SMTP Port (e.g., 587 for TLS, 465 for SSL):",
+            value=DEFAULT_SMTP_PORT,
+            key="smtp_port_input",
+            step=1
+        )
+
+        from_email_valid = is_valid_syntax(sender_email_input)
+        if not from_email_valid:
+            st.error("🚨 Invalid Sender Email format. Please correct.")
+
+        st.markdown("---")
+        st.subheader("Validation Specific Settings")
+        st.write("Customize lists for email classification.")
         disposable_input = st.text_area(
-            "Add or remove domains (comma or newline separated):",
+            "Disposable Domains (comma or newline separated):",
             value=", ".join(DEFAULT_DISPOSABLE_DOMAINS),
             height=100,
             key="disposable_domains_input"
         )
         disposable_domains_set = set(d.strip().lower() for d in disposable_input.replace(',', '\n').split('\n') if d.strip())
 
-        st.subheader("Role-based Prefixes")
-        st.write("Emails starting with these prefixes (e.g., `admin@`) will be flagged as 'Role-based'.")
         role_based_input = st.text_area(
-            "Add or remove prefixes (comma or newline separated):",
+            "Role-based Prefixes (comma or newline separated):",
             value=", ".join(DEFAULT_ROLE_BASED_PREFIXES),
             height=100,
             key="role_based_prefixes_input"
         )
         role_based_prefixes_set = set(p.strip().lower() for p in role_based_input.replace(',', '\n').split('\n') if p.strip())
 
-        st.subheader("SMTP 'From' Email Address")
-        st.write("This email address is used as the 'sender' for SMTP verification. Use a real domain you control for best results.")
-        from_email_input = st.text_input(
-            "Enter your 'From' email:",
-            value=DEFAULT_FROM_EMAIL,
-            key="from_email_input",
-            help="Example: check@yourdomain.com"
-        )
-        from_email_valid = is_valid_syntax(from_email_input) # Use the new strict syntax check here too
-        if not from_email_valid:
-            st.error("🚨 Invalid 'From' email format. Please correct.")
-
 
 st.divider()
 
-# --- Main Email Validator Content ---
-st.subheader("Paste Emails Here")
+# --- Main Tabs for Validator and Sender ---
+tab_validator, tab_sender = st.tabs(["⚡ Email Validator", "✉️ Send Test Email"])
 
-user_input = st.text_area(
-    "Emails to Validate",
-    placeholder="e.g., alice@example.com, bob@company.net\ncontact@marketing.org",
-    height=250,
-    key="email_input"
-)
+# --- Email Validator Tab Content ---
+with tab_validator:
+    st.header("🚀 Validate Your Emails")
+    st.info("""
+        Enter the email addresses you wish to validate.
+        You can enter them separated by commas, newlines, or a mix of both.
+        """)
 
-col_btn, col_spacer = st.columns([1, 4])
+    user_input = st.text_area(
+        "Emails to Validate",
+        placeholder="e.g., alice@example.com, bob@company.net\ncontact@marketing.org",
+        height=250,
+        key="email_input"
+    )
 
-if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary"):
-    if not from_email_valid:
-        st.error("🚨 Cannot proceed: The 'From' email address in Configuration is invalid. Please correct it.")
-    else:
-        raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
-        
-        if not raw_emails:
-            st.warning("☝️ Please enter at least one email address to validate.")
+    col_btn, col_spacer = st.columns([1, 4])
+    
+    if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary"):
+        if not from_email_valid: # Check sender email validity from config
+            st.error("🚨 Cannot proceed: Your Sender Email (in Configuration) is invalid. Please correct it.")
         else:
-            unique_emails = list(set(raw_emails))
-            if len(raw_emails) != len(unique_emails):
-                st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
-            emails_to_validate = unique_emails
+            raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
             
-            with st.status(f"Validating {len(emails_to_validate)} email(s)... This might take a moment.", expanded=True) as status_container:
-                progress_bar = st.progress(0, text="Starting validation...")
+            if not raw_emails:
+                st.warning("☝️ Please enter at least one email address to validate.")
+            else:
+                unique_emails = list(set(raw_emails))
+                if len(raw_emails) != len(unique_emails):
+                    st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
+                emails_to_validate = unique_emails
                 
-                results = []
-                total_emails = len(emails_to_validate)
+                with st.status(f"Validating {len(emails_to_validate)} email(s)... This might take a moment.", expanded=True) as status_container:
+                    progress_bar = st.progress(0, text="Starting validation...")
+                    
+                    results = []
+                    total_emails = len(emails_to_validate)
 
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, from_email_input) for email in emails_to_validate]
-                    for i, future in enumerate(futures):
-                        results.append(future.result())
-                        progress_percent = (i + 1) / total_emails
-                        progress_bar.progress(progress_percent, text=f"Processing email {i + 1} of {total_emails}...")
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input) for email in emails_to_validate]
+                        for i, future in enumerate(futures):
+                            results.append(future.result())
+                            progress_percent = (i + 1) / total_emails
+                            progress_bar.progress(progress_percent, text=f"Processing email {i + 1} of {total_emails}...")
+                    
+                    status_container.update(label="Validation Complete!", state="complete", expanded=False)
                 
-                status_container.update(label="Validation Complete!", state="complete", expanded=False)
-            
-            df = pd.DataFrame(results)
-            
-            st.success("🎉 Validation complete! Here are your results:")
+                df = pd.DataFrame(results)
+                
+                st.success("🎉 Validation complete! Here are your results:")
 
-            # --- Summary Statistics ---
-            st.subheader("📊 Validation Summary")
-            verdict_counts = Counter(df['Verdict'])
-            
-            summary_cols = st.columns(len(verdict_counts) if len(verdict_counts) > 0 else 1)
-            col_idx = 0
-            
-            metric_icons = {
-                "✅ Valid": "✨",
-                "❌ Invalid": "🚫",
-                "⚠️ Disposable": "🗑️",
-                "ℹ️ Role-based": "👥",
-                "❌ Invalid Syntax": "📝", # New verdict for clarity
-                "❌ Invalid Domain Format": "🌐" # New verdict for clarity
-            }
+                # --- Summary Statistics ---
+                st.subheader("📊 Validation Summary")
+                verdict_counts = Counter(df['Verdict'])
+                
+                summary_cols = st.columns(len(verdict_counts) if len(verdict_counts) > 0 else 1)
+                col_idx = 0
+                
+                metric_icons = {
+                    "✅ Valid": "✨",
+                    "❌ Invalid": "🚫",
+                    "⚠️ Disposable": "🗑️",
+                    "ℹ️ Role-based": "👥",
+                    "❌ Invalid Syntax": "📝",
+                    "❌ Invalid Domain Format": "🌐"
+                }
 
-            for verdict in sorted(verdict_counts.keys()):
-                count = verdict_counts[verdict]
-                with summary_cols[col_idx % len(summary_cols)]:
-                    st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
-                col_idx += 1
+                for verdict in sorted(verdict_counts.keys()):
+                    count = verdict_counts[verdict]
+                    with summary_cols[col_idx % len(summary_cols)]:
+                        st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
+                    col_idx += 1
+                
+                # Display average score (if any emails were processed)
+                if not df.empty:
+                    avg_score = df['Score'].mean()
+                    st.metric("⭐ Average Deliverability Score", f"{avg_score:.2f}")
 
-            st.divider()
+                st.divider()
 
-            # --- Filtering Results ---
-            st.subheader("Detailed Results & Export")
-            
-            all_verdicts = df['Verdict'].unique().tolist()
-            filter_options = ["All"] + sorted(all_verdicts)
-            
-            selected_verdict = st.selectbox(
-                "🔍 Filter results by verdict type:", 
-                filter_options, 
-                help="Select 'All' to view all validated emails, or choose a specific verdict to filter."
-            )
+                # --- Filtering Results ---
+                st.subheader("Detailed Results & Export")
+                
+                all_verdicts = df['Verdict'].unique().tolist()
+                filter_options = ["All"] + sorted(all_verdicts)
+                
+                selected_verdict = st.selectbox(
+                    "🔍 Filter results by verdict type:", 
+                    filter_options, 
+                    help="Select 'All' to view all validated emails, or choose a specific verdict to filter."
+                )
 
-            filtered_df = df
-            if selected_verdict != "All":
-                filtered_df = df[df['Verdict'] == selected_verdict]
+                filtered_df = df
+                if selected_verdict != "All":
+                    filtered_df = df[df['Verdict'] == selected_verdict]
 
-            st.dataframe(filtered_df, use_container_width=True, height=400)
+                st.dataframe(filtered_df, use_container_width=True, height=400)
 
-            st.download_button(
-                "⬇️ Download Filtered Results as CSV",
-                data=filtered_df.to_csv(index=False).encode('utf-8'),
-                file_name="email_validation_results.csv",
-                mime="text/csv",
-                help="Click to download the currently displayed (filtered) validation results as a CSV file. Columns: Email, Domain, Company/Org, Syntax Valid, MX Record, Disposable, Role-based, SMTP Valid, Verdict."
-            )
+                csv = filtered_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "⬇️ Download Filtered Results as CSV",
+                    data=csv,
+                    file_name="email_validation_results.csv",
+                    mime="text/csv",
+                    help="Click to download the currently displayed (filtered) validation results as a CSV file. Includes Email, Domain, Company/Org, Validation Flags, Verdict, and Deliverability Score."
+                )
+
+# --- Send Test Email Tab Content ---
+with tab_sender:
+    st.header("✉️ Send a Test Email")
+    st.info("""
+        Use this feature to send a test email from your configured sender account.
+        This helps confirm your SMTP settings and ensure your emails are being sent successfully.
+        """)
+    
+    st.warning("""
+        **Gmail Users with 2-Step Verification:** You **MUST** generate an **App Password** for your Google account and use that in the password field in `Configuration Settings`. Your regular Gmail password will likely not work.
+        """)
+
+    recipient_test_email = st.text_input("Recipient Email:", key="recipient_test_email", placeholder="test@example.com")
+    test_subject = st.text_input("Subject:", key="test_subject", placeholder="Test Email from Streamlit App")
+    test_body = st.text_area("Email Body:", key="test_body", height=150, placeholder="Hello, this is a test email sent from the Streamlit Email Tool!")
+
+    if st.button("🚀 Send Test Email", type="primary"):
+        if not sender_email_input or not sender_password_input:
+            st.error("🚨 Sender Email and Password are required in the Configuration Settings to send emails.")
+        elif not recipient_test_email or not test_subject or not test_body:
+            st.warning("Please fill in all recipient, subject, and body fields to send a test email.")
+        else:
+            with st.spinner("Sending email..."):
+                success, message = send_email_via_yagmail(
+                    sender_email_input, 
+                    sender_password_input, 
+                    recipient_test_email, 
+                    test_subject, 
+                    test_body,
+                    smtp_host_input, # Pass custom host
+                    smtp_port_input  # Pass custom port
+                )
+                if success:
+                    st.success(f"✅ {message}")
+                else:
+                    st.error(f"❌ {message}")
 
 st.divider()
 st.markdown("Developed with ❤️ with Streamlit and community libraries.")
