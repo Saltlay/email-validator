@@ -3,12 +3,13 @@ import smtplib
 import dns.resolver
 import pandas as pd
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed # Import as_completed
 from collections import Counter
 import whois
 from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
 import tldextract
-import yagmail # New import for email sending
+import yagmail
+import time # For simulated work/delays
 
 # --- Configs ---
 DEFAULT_DISPOSABLE_DOMAINS = {
@@ -164,11 +165,10 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email, e
         result["Score"] = calculate_deliverability_score(result)
         return result
 
-    # --- Conditional Company Lookup ---
     if enable_company_lookup:
         result["Company/Org"] = get_domain_info(registrable_domain)
     else:
-        result["Company/Org"] = "Lookup Disabled" # Indicate it was skipped
+        result["Company/Org"] = "Lookup Disabled"
 
     result["Disposable"] = is_disposable(registrable_domain, disposable_domains)
     result["Role-based"] = is_role_based(local_part, role_based_prefixes)
@@ -198,30 +198,38 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
         if "@gmail.com" in sender_email.lower() and "@" not in sender_password:
              st.warning("For Gmail, if you have 2FA enabled, you might need an **App Password** instead of your regular password. See Gmail security settings.")
 
-        yag = yagmail.SMTP(
-            user=sender_email,
-            password=sender_password,
-            host=smtp_host if smtp_host else None,
-            port=smtp_port if smtp_port else None,
-            # For debugging, uncomment below, but ensure security in production
-            # smtp_debug=True
-        )
+        if smtp_port == 465:
+            yag = yagmail.SMTP(
+                user=sender_email,
+                password=sender_password,
+                host=smtp_host,
+                port=smtp_port,
+                ssl=True
+            )
+        else:
+            yag = yagmail.SMTP(
+                user=sender_email,
+                password=sender_password,
+                host=smtp_host,
+                port=smtp_port,
+                starttls=True
+            )
+
         yag.send(
             to=recipient_email,
             subject=subject,
             contents=body
         )
         return True, "Email sent successfully!"
-    # The change is here: Catching the broader Exception first to get more details
-    except Exception as e: # Changed from yagmail.YagmailError
-        # You can inspect 'e' to see if it's a specific YagmailError subclass
-        # or a different type of error.
+    except Exception as e:
         error_message = str(e)
-        if "SMTPAuthenticationError" in error_message:
+        if "SMTPAuthenticationError" in error_message or "Authentication failed" in error_message:
             return False, f"Authentication failed. Check your sender email and password (or App Password for Gmail). Error: {error_message}"
-        elif "SMTPConnectError" in error_message:
+        elif "SMTPConnectError" in error_message or "Connection refused" in error_message:
             return False, f"Could not connect to SMTP server. Check host/port or internet connection. Error: {error_message}"
-        # Fallback for any other unexpected errors
+        elif "WRONG_VERSION_NUMBER" in error_message:
+             return False, f"SSL/TLS Error: Port/Encryption mismatch. Ensure you're using the correct port (e.g., 465 for SSL or 587 for TLS/STARTTLS) for your SMTP server. Error: {error_message}"
+        
         return False, f"Failed to send email: An unexpected error occurred: {error_message}"
 
 
@@ -285,16 +293,23 @@ with config_col:
         
         st.markdown("---")
         st.write("**Advanced SMTP Settings (for non-Gmail or custom servers)**")
+        st.info("""
+        Common SMTP Ports:
+        * **587:** Recommended for STARTTLS (explicit TLS). Most common.
+        * **465:** For SSL (implicit TLS).
+        * **25:** Unencrypted (often blocked/discouraged).
+        """)
         smtp_host_input = st.text_input(
             "SMTP Host (e.g., smtp.gmail.com):",
             value=DEFAULT_SMTP_HOST,
             key="smtp_host_input"
         )
         smtp_port_input = st.number_input(
-            "SMTP Port (e.g., 587 for TLS, 465 for SSL):",
+            "SMTP Port (e.g., 587):",
             value=DEFAULT_SMTP_PORT,
             key="smtp_port_input",
-            step=1
+            step=1,
+            help="Choose 587 for STARTTLS, 465 for SSL."
         )
 
         from_email_valid = is_valid_syntax(sender_email_input)
@@ -305,10 +320,9 @@ with config_col:
         st.subheader("Validation Specific Settings")
         st.write("Customize lists for email classification and enable/disable optional lookups.")
 
-        # --- New: Toggle for Company Lookup ---
         enable_company_lookup = st.checkbox(
             "Enable Company/Organization Lookup (WHOIS)",
-            value=True, # Default to on
+            value=True,
             help="Toggle this to enable/disable retrieving company information via WHOIS. Disable if you find results are consistently 'Private' or 'N/A' or if it significantly slows down validation."
         )
         if not enable_company_lookup:
@@ -334,6 +348,16 @@ with config_col:
 
 st.divider()
 
+# --- Initialize session state for stop button ---
+if 'stop_validation' not in st.session_state:
+    st.session_state.stop_validation = False
+if 'is_validating' not in st.session_state:
+    st.session_state.is_validating = False
+
+# --- Callback for Stop Button ---
+def stop_validation_callback():
+    st.session_state.stop_validation = True
+
 # --- Main Tabs for Validator and Sender ---
 tab_validator, tab_sender = st.tabs(["⚡ Email Validator", "✉️ Send Test Email"])
 
@@ -352,96 +376,129 @@ with tab_validator:
         key="email_input"
     )
 
-    col_btn, col_spacer = st.columns([1, 4])
+    col_start_btn, col_stop_btn, col_spacer = st.columns([1, 1, 3]) # Added a column for the stop button
     
-    if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary"):
+    # --- Start Button Logic ---
+    if col_start_btn.button("✅ Validate Emails", use_container_width=True, type="primary", disabled=st.session_state.is_validating):
+        st.session_state.stop_validation = False # Reset stop flag for new validation run
+        st.session_state.is_validating = True # Set validating state
+
         if not from_email_valid:
             st.error("🚨 Cannot proceed: Your Sender Email (in Configuration) is invalid. Please correct it.")
+            st.session_state.is_validating = False # Reset state
         else:
             raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
             
             if not raw_emails:
                 st.warning("☝️ Please enter at least one email address to validate.")
+                st.session_state.is_validating = False # Reset state
             else:
                 unique_emails = list(set(raw_emails))
                 if len(raw_emails) != len(unique_emails):
                     st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
                 emails_to_validate = unique_emails
                 
+                # Using st.empty() to allow dynamically showing/hiding stop button container
+                stop_button_placeholder = st.empty() 
+
                 with st.status(f"Validating {len(emails_to_validate)} email(s)... This might take a moment.", expanded=True) as status_container:
+                    # Display stop button while validating
+                    with stop_button_placeholder.container():
+                        col_stop_btn.button("⏹️ Stop Validation", use_container_width=True, type="secondary", on_click=stop_validation_callback, disabled=not st.session_state.is_validating)
+                        
                     progress_bar = st.progress(0, text="Starting validation...")
                     
                     results = []
                     total_emails = len(emails_to_validate)
 
                     with ThreadPoolExecutor(max_workers=10) as executor:
-                        # Pass the new enable_company_lookup flag to validate_email
-                        futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup) for email in emails_to_validate]
-                        for i, future in enumerate(futures):
+                        futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup): email for email in emails_to_validate}
+                        
+                        for i, future in enumerate(as_completed(futures)): # Use as_completed for results as they finish
+                            if st.session_state.stop_validation:
+                                status_container.update(label="Validation Aborted by User!", state="error", expanded=True)
+                                # Cancel remaining futures
+                                for f in futures:
+                                    f.cancel()
+                                break # Exit the loop
+                            
                             results.append(future.result())
                             progress_percent = (i + 1) / total_emails
                             progress_bar.progress(progress_percent, text=f"Processing email {i + 1} of {total_emails}...")
                     
-                    status_container.update(label="Validation Complete!", state="complete", expanded=False)
-                
-                df = pd.DataFrame(results)
-                
-                st.success("🎉 Validation complete! Here are your results:")
+                    if not st.session_state.stop_validation: # Only show success if not aborted
+                        status_container.update(label="Validation Complete!", state="complete", expanded=False)
+                    
+                st.session_state.is_validating = False # Reset state after validation attempt
+                st.session_state.stop_validation = False # Reset stop flag
+                stop_button_placeholder.empty() # Clear the stop button after validation/abortion
 
-                # --- Summary Statistics ---
-                st.subheader("📊 Validation Summary")
-                verdict_counts = Counter(df['Verdict'])
-                
-                summary_cols = st.columns(len(verdict_counts) if len(verdict_counts) > 0 else 1)
-                col_idx = 0
-                
-                metric_icons = {
-                    "✅ Valid": "✨",
-                    "❌ Invalid": "🚫",
-                    "⚠️ Disposable": "🗑️",
-                    "ℹ️ Role-based": "👥",
-                    "❌ Invalid Syntax": "📝",
-                    "❌ Invalid Domain Format": "🌐"
-                }
+                # Display results only if some results were collected
+                if results:
+                    df = pd.DataFrame(results)
+                    
+                    if st.session_state.stop_validation: # If aborted, show partial results
+                        st.warning("Validation was stopped. Displaying partial results:")
+                    else:
+                        st.success("🎉 Validation complete! Here are your results:")
 
-                for verdict in sorted(verdict_counts.keys()):
-                    count = verdict_counts[verdict]
-                    with summary_cols[col_idx % len(summary_cols)]:
-                        st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
-                    col_idx += 1
-                
-                if not df.empty:
-                    avg_score = df['Score'].mean()
-                    st.metric("⭐ Average Deliverability Score", f"{avg_score:.2f}")
+                    # --- Summary Statistics ---
+                    st.subheader("📊 Validation Summary")
+                    verdict_counts = Counter(df['Verdict'])
+                    
+                    summary_cols = st.columns(len(verdict_counts) if len(verdict_counts) > 0 else 1)
+                    col_idx = 0
+                    
+                    metric_icons = {
+                        "✅ Valid": "✨",
+                        "❌ Invalid": "🚫",
+                        "⚠️ Disposable": "🗑️",
+                        "ℹ️ Role-based": "👥",
+                        "❌ Invalid Syntax": "📝",
+                        "❌ Invalid Domain Format": "🌐"
+                    }
 
-                st.divider()
+                    for verdict in sorted(verdict_counts.keys()):
+                        count = verdict_counts[verdict]
+                        with summary_cols[col_idx % len(summary_cols)]:
+                            st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
+                        col_idx += 1
+                    
+                    if not df.empty:
+                        avg_score = df['Score'].mean()
+                        st.metric("⭐ Average Deliverability Score", f"{avg_score:.2f}")
 
-                # --- Filtering Results ---
-                st.subheader("Detailed Results & Export")
-                
-                all_verdicts = df['Verdict'].unique().tolist()
-                filter_options = ["All"] + sorted(all_verdicts)
-                
-                selected_verdict = st.selectbox(
-                    "🔍 Filter results by verdict type:", 
-                    filter_options, 
-                    help="Select 'All' to view all validated emails, or choose a specific verdict to filter."
-                )
+                    st.divider()
 
-                filtered_df = df
-                if selected_verdict != "All":
-                    filtered_df = df[df['Verdict'] == selected_verdict]
+                    # --- Filtering Results ---
+                    st.subheader("Detailed Results & Export")
+                    
+                    all_verdicts = df['Verdict'].unique().tolist()
+                    filter_options = ["All"] + sorted(all_verdicts)
+                    
+                    selected_verdict = st.selectbox(
+                        "🔍 Filter results by verdict type:", 
+                        filter_options, 
+                        help="Select 'All' to view all validated emails, or choose a specific verdict to filter."
+                    )
 
-                st.dataframe(filtered_df, use_container_width=True, height=400)
+                    filtered_df = df
+                    if selected_verdict != "All":
+                        filtered_df = df[df['Verdict'] == selected_verdict]
 
-                csv = filtered_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "⬇️ Download Filtered Results as CSV",
-                    data=csv,
-                    file_name="email_validation_results.csv",
-                    mime="text/csv",
-                    help="Click to download the currently displayed (filtered) validation results as a CSV file. Includes Email, Domain, Company/Org, Validation Flags, Verdict, and Deliverability Score."
-                )
+                    st.dataframe(filtered_df, use_container_width=True, height=400)
+
+                    csv = filtered_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "⬇️ Download Filtered Results as CSV",
+                        data=csv,
+                        file_name="email_validation_results.csv",
+                        mime="text/csv",
+                        help="Click to download the currently displayed (filtered) validation results as a CSV file. Includes Email, Domain, Company/Org, Validation Flags, Verdict, and Deliverability Score."
+                    )
+                else: # If validation was stopped very early and no results collected
+                    st.info("No results to display. Validation might have been stopped prematurely or no valid emails were found.")
+
 
 # --- Send Test Email Tab Content ---
 with tab_sender:
