@@ -101,8 +101,12 @@ Welcome to the **Email Validator Tool**! This application helps you verify email
 
 st.write("---")
 
-## Configuration Settings
-with st.expander("⚙️ Configuration Settings"):
+# --- Tab based navigation ---
+tab1, tab2 = st.tabs(["✉️ Email Validator", "⚙️ Configuration"])
+
+# --- Configuration Tab Content ---
+with tab2:
+    st.header("⚙️ Configuration Settings")
     st.info("Customize the lists of disposable domains, role-based prefixes, and the 'From' email address for SMTP checks.")
     
     col1_config, col2_config = st.columns(2)
@@ -111,7 +115,8 @@ with st.expander("⚙️ Configuration Settings"):
         disposable_input = st.text_area(
             "Disposable Domains (comma or newline separated)",
             value=", ".join(DEFAULT_DISPOSABLE_DOMAINS),
-            height=150
+            height=150,
+            key="disposable_domains_input" # Added key for uniqueness
         )
         disposable_domains_set = set(d.strip().lower() for d in disposable_input.replace(',', '\n').split('\n') if d.strip())
 
@@ -119,13 +124,15 @@ with st.expander("⚙️ Configuration Settings"):
         role_based_input = st.text_area(
             "Role-based Prefixes (comma or newline separated)",
             value=", ".join(DEFAULT_ROLE_BASED_PREFIXES),
-            height=150
+            height=150,
+            key="role_based_prefixes_input" # Added key for uniqueness
         )
         role_based_prefixes_set = set(p.strip().lower() for p in role_based_input.replace(',', '\n').split('\n') if p.strip())
 
     from_email_input = st.text_input(
         "SMTP 'From' Email Address (e.g., check@yourdomain.com)",
-        value=DEFAULT_FROM_EMAIL
+        value=DEFAULT_FROM_EMAIL,
+        key="from_email_input" # Added key for uniqueness
     )
     if not is_valid_syntax(from_email_input):
         st.error("Please enter a valid 'From' email address for SMTP checks.")
@@ -133,58 +140,59 @@ with st.expander("⚙️ Configuration Settings"):
     else:
         from_email_valid = True
 
-st.write("---")
+# --- Email Validator Tab Content ---
+with tab1:
+    st.header("✉️ Validate Your Emails")
+    st.write("Input one or more email addresses below. Separate them with commas or newlines.")
 
-## Email Input
-st.subheader("✉️ Enter Emails for Validation")
-st.write("Input one or more email addresses below. Separate them with commas or newlines.")
+    user_input = st.text_area(
+        "Emails to Validate",
+        placeholder="e.g., test@example.com, info@company.org\nuser@disposable.com",
+        height=200,
+        key="email_input" # Added key for uniqueness
+    )
 
-user_input = st.text_area(
-    "Emails to Validate",
-    placeholder="e.g., test@example.com, info@company.org\nuser@disposable.com",
-    height=200
-)
+    # Layout for buttons and messages
+    button_col, message_col = st.columns([1, 3])
 
-# Layout for buttons and messages
-button_col, message_col = st.columns([1, 3])
-
-if button_col.button("🚀 Validate Emails", use_container_width=True):
-    if not from_email_valid:
-        message_col.error("Cannot proceed: The 'From' email address is invalid. Please correct it in Configuration Settings.")
-    else:
-        emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
-        if not emails:
-            message_col.warning("Please enter at least one email address to validate.")
+    if button_col.button("🚀 Validate Emails", use_container_width=True):
+        if not from_email_valid:
+            message_col.error("Cannot proceed: The 'From' email address is invalid. Please correct it in the **Configuration** tab.")
         else:
-            message_col.info(f"Processing {len(emails)} email(s)...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
+            if not emails:
+                message_col.warning("Please enter at least one email address to validate.")
+            else:
+                message_col.info(f"Processing {len(emails)} email(s)...")
+                progress_bar = st.progress(0)
+                status_text = st.empty()
 
-            results = []
-            total_emails = len(emails)
+                results = []
+                total_emails = len(emails)
 
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, from_email_input) for email in emails]
-                for i, future in enumerate(futures):
-                    results.append(future.result())
-                    progress_bar.progress((i + 1) / total_emails)
-                    status_text.text(f"Validated {i + 1} of {total_emails} emails.")
-            
-            progress_bar.empty() # Clear the progress bar after completion
-            status_text.empty() # Clear the status text after completion
+                # Pass the dynamically updated configuration to the validation function
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, from_email_input) for email in emails]
+                    for i, future in enumerate(futures):
+                        results.append(future.result())
+                        progress_bar.progress((i + 1) / total_emails)
+                        status_text.text(f"Validated {i + 1} of {total_emails} emails.")
+                
+                progress_bar.empty() # Clear the progress bar after completion
+                status_text.empty() # Clear the status text after completion
 
-            df = pd.DataFrame(results)
-            st.success("🎉 Validation complete! See results below:")
-            st.dataframe(df, use_container_width=True) # Make dataframe span full width
+                df = pd.DataFrame(results)
+                st.success("🎉 Validation complete! See results below:")
+                st.dataframe(df, use_container_width=True) # Make dataframe span full width
 
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Results as CSV",
-                data=csv,
-                file_name="email_validation_results.csv",
-                mime="text/csv",
-                help="Click to download the validation results as a CSV file."
-            )
+                csv = df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Download Results as CSV",
+                    data=csv,
+                    file_name="email_validation_results.csv",
+                    mime="text/csv",
+                    help="Click to download the validation results as a CSV file."
+                )
 
 st.write("---")
 st.markdown("Developed with ❤️ using Streamlit")
