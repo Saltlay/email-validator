@@ -7,8 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 import whois # Ensure you have `pip install python-whois`
 
+# New imports for enhanced validation
+from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
+import tldextract # Ensure you have `pip install tldextract`
+
 # --- Configs ---
-# Default values for configuration, now editable via UI widgets
 DEFAULT_DISPOSABLE_DOMAINS = {
     "mailinator.com", "10minutemail.com", "guerrillamail.com",
     "trashmail.com", "tempmail.com", "yopmail.com"
@@ -18,37 +21,66 @@ DEFAULT_ROLE_BASED_PREFIXES = {
 }
 DEFAULT_FROM_EMAIL = "check@yourdomain.com"
 
-# DNS MX caching
+# DNS MX and WHOIS caching
 mx_cache = {}
-whois_cache = {} # Cache for WHOIS results
+whois_cache = {}
 
-# --- Validators ---
-def is_valid_syntax(email):
-    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
-
-def is_disposable(email, disposable_domains):
-    domain = email.split('@')[1].lower()
-    return domain in disposable_domains
-
-def is_role_based(email, role_based_prefixes):
-    prefix = email.split('@')[0].lower()
-    return prefix in role_based_prefixes
-
-def has_mx_record(domain):
-    if domain in mx_cache:
-        return mx_cache[domain]
+# --- Helper Function for Domain Extraction ---
+def get_registrable_domain(email_or_domain_string):
+    """
+    Extracts the registrable domain (e.g., 'google.com' from 'mail.google.com').
+    """
     try:
-        answers = dns.resolver.resolve(domain, 'MX', 'IN', lifetime=3)
-        mx_cache[domain] = len(answers) > 0
-        return mx_cache[domain]
+        if '@' in email_or_domain_string:
+            # If it's an email, extract domain part first
+            domain_part = email_or_domain_string.split('@')[1]
+        else:
+            # If it's already a domain string
+            domain_part = email_or_domain_string
+
+        extracted = tldextract.extract(domain_part)
+        # Combine domain and suffix to get the registrable domain
+        if extracted.domain and extracted.suffix:
+            return f"{extracted.domain}.{extracted.suffix}"
+        elif extracted.domain: # For domains without a public suffix (e.g., local network names)
+            return extracted.domain
+        else:
+            return None # Cannot extract a meaningful registrable domain
     except Exception:
-        mx_cache[domain] = False
+        return None
+
+# --- Validators (Updated) ---
+def is_valid_syntax(email):
+    """
+    Uses email_validator to check syntax strictly according to RFCs.
+    """
+    try:
+        # check_deliverability=False because we handle MX/SMTP separately
+        validate_syntax_strict(email, check_deliverability=False)
+        return True
+    except EmailNotValidError:
         return False
 
-def verify_smtp(email, from_email):
+def is_disposable(registrable_domain, disposable_domains):
+    return registrable_domain in disposable_domains
+
+def is_role_based(email_prefix, role_based_prefixes):
+    return email_prefix.lower() in role_based_prefixes
+
+def has_mx_record(registrable_domain):
+    if registrable_domain in mx_cache:
+        return mx_cache[registrable_domain]
     try:
-        domain = email.split('@')[1]
-        mx_records = dns.resolver.resolve(domain, 'MX', 'IN', lifetime=3)
+        answers = dns.resolver.resolve(registrable_domain, 'MX', 'IN', lifetime=3)
+        mx_cache[registrable_domain] = len(answers) > 0
+        return mx_cache[registrable_domain]
+    except Exception:
+        mx_cache[registrable_domain] = False
+        return False
+
+def verify_smtp(email, registrable_domain, from_email):
+    try:
+        mx_records = dns.resolver.resolve(registrable_domain, 'MX', 'IN', lifetime=3)
         mx_records_sorted = sorted(mx_records, key=lambda r: r.preference)
         mx = str(mx_records_sorted[0].exchange).rstrip('.')
 
@@ -61,14 +93,15 @@ def verify_smtp(email, from_email):
     except Exception:
         return False
 
-def get_domain_info(domain):
-    if domain in whois_cache:
-        return whois_cache[domain]
+# --- Get Domain Info (Updated to use registrable_domain) ---
+def get_domain_info(registrable_domain):
+    if registrable_domain in whois_cache:
+        return whois_cache[registrable_domain]
     
-    company_name = "N/A"
+    company_name = "N/A" # Default if not found or private
     
     try:
-        w = whois.whois(domain)
+        w = whois.whois(registrable_domain)
         if hasattr(w, 'organization') and w.organization:
             company_name = w.organization if isinstance(w.organization, str) else w.organization[0]
         elif hasattr(w, 'registrant_organization') and w.registrant_organization:
@@ -79,35 +112,21 @@ def get_domain_info(domain):
             company_name = "Private/No Org Info"
             
     except Exception:
-        company_name = "Lookup Failed"
+        company_name = "Lookup Failed" # More specific error
         
-    whois_cache[domain] = company_name
+    whois_cache[registrable_domain] = company_name
     return company_name
 
-# --- Main Checker (Modified) ---
+# --- Main Checker (Modified significantly) ---
 def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     email = email.strip()
     
-    if not is_valid_syntax(email):
-        return {
-            "Email": email,
-            "Domain": "N/A",
-            "Company/Org": "N/A (Invalid Syntax)",
-            "Syntax Valid": False,
-            "MX Record": False,
-            "Disposable": False,
-            "Role-based": False,
-            "SMTP Valid": False,
-            "Verdict": "❌ Invalid Syntax"
-        }
-        
-    domain = email.split('@')[1]
-
+    # Initialize result dictionary
     result = {
         "Email": email,
-        "Domain": domain,
-        "Company/Org": "Fetching...",
-        "Syntax Valid": True,
+        "Domain": "N/A", # Will be updated with registrable domain
+        "Company/Org": "N/A (Pending)", # Initial status
+        "Syntax Valid": False,
         "MX Record": False,
         "Disposable": False,
         "Role-based": False,
@@ -115,15 +134,41 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
         "Verdict": "❌ Invalid"
     }
 
-    result["Company/Org"] = get_domain_info(domain)
-
-    result["Disposable"] = is_disposable(email, disposable_domains)
-    result["Role-based"] = is_role_based(email, role_based_prefixes)
-    result["MX Record"] = has_mx_record(domain)
-
-    if result["MX Record"] and not result["Disposable"]:
-        result["SMTP Valid"] = verify_smtp(email, from_email)
+    # 1. Syntax Validation (using email_validator)
+    if not is_valid_syntax(email):
+        result["Verdict"] = "❌ Invalid Syntax"
+        result["Company/Org"] = "N/A (Invalid Syntax)"
+        return result
+    result["Syntax Valid"] = True
     
+    # Extract domain and prefix after syntax is confirmed
+    local_part, full_domain_from_email = email.split('@')
+    registrable_domain = get_registrable_domain(full_domain_from_email)
+    result["Domain"] = registrable_domain if registrable_domain else full_domain_from_email
+
+    # If registrable_domain couldn't be determined, it's problematic
+    if not registrable_domain:
+        result["Verdict"] = "❌ Invalid Domain Format"
+        result["Company/Org"] = "N/A (Invalid Domain)"
+        return result
+
+    # 2. Check for Disposable and Role-based
+    result["Disposable"] = is_disposable(registrable_domain, disposable_domains)
+    result["Role-based"] = is_role_based(local_part, role_based_prefixes)
+
+    # 3. WHOIS Company Lookup (using registrable_domain)
+    result["Company/Org"] = get_domain_info(registrable_domain)
+
+    # 4. MX Record Check (using registrable_domain)
+    result["MX Record"] = has_mx_record(registrable_domain)
+
+    # 5. SMTP Verification (only if MX record exists and not disposable by default)
+    # The current logic will try SMTP even for role-based/disposable if MX exists
+    # You might want to skip SMTP for disposable/role-based if they are "final" verdicts for you.
+    if result["MX Record"] and not result["Disposable"]: # Can modify this condition
+        result["SMTP Valid"] = verify_smtp(email, registrable_domain, from_email) # Pass registrable domain for server.helo
+
+    # Final Verdict Logic (refined order)
     if result["Disposable"]:
         result["Verdict"] = "⚠️ Disposable"
     elif result["Role-based"]:
@@ -131,7 +176,8 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     elif all([result["Syntax Valid"], result["MX Record"], result["SMTP Valid"]]):
         result["Verdict"] = "✅ Valid"
     else:
-        result["Verdict"] = "❌ Invalid"
+        # Catch-all for other failures (e.g., no MX record, SMTP verification failed)
+        result["Verdict"] = "❌ Invalid" 
 
     return result
 
@@ -141,7 +187,8 @@ st.title("📧 Comprehensive Email Validator Tool")
 
 st.markdown("""
 Welcome to the **Email Validator Tool**! This application helps you verify email addresses based on several criteria, including:
-* **Syntax:** Checks if the email format is correct.
+* **Enhanced Syntax:** Strict RFC-compliant email format check (e.g., `user@domain.com`).
+* **Accurate Domain Resolution:** Correctly identifies the registrable domain (e.g., `example.com` from `mail.example.com`).
 * **MX Record:** Verifies if the domain has Mail Exchange records (necessary for receiving emails).
 * **SMTP Check:** Attempts to confirm if the email inbox actually exists (the most reliable but also slowest check).
 * **Disposable Email Detection:** Identifies emails from temporary/disposable email services.
@@ -149,10 +196,10 @@ Welcome to the **Email Validator Tool**! This application helps you verify email
 * **Company/Organization Lookup:** Attempts to retrieve organization name via public WHOIS data.
 """)
 
-st.divider() # Visual separation
+st.divider()
 
 # --- Top Section: Intro Text and Configuration in Columns ---
-intro_text_col, config_col = st.columns([3, 1]) # 3 parts for text, 1 for config
+intro_text_col, config_col = st.columns([3, 1])
 
 with intro_text_col:
     st.subheader("Get Started")
@@ -160,7 +207,7 @@ with intro_text_col:
     st.warning("⚠️ **Important Note on 'Company/Org' Lookup:** This feature relies on public WHOIS data, which can often be private, incomplete, or inaccurate. Results for this column are 'best effort' and not guaranteed.")
 
 with config_col:
-    with st.expander("⚙️ Configuration Settings", expanded=False): # Starts collapsed
+    with st.expander("⚙️ Configuration Settings", expanded=False):
         st.info("Adjust the parameters for email validation. Your changes will apply to all subsequent validation runs.")
         
         st.subheader("Disposable Domains")
@@ -168,7 +215,7 @@ with config_col:
         disposable_input = st.text_area(
             "Add or remove domains (comma or newline separated):",
             value=", ".join(DEFAULT_DISPOSABLE_DOMAINS),
-            height=100, # Reduced height for compact display in expander
+            height=100,
             key="disposable_domains_input"
         )
         disposable_domains_set = set(d.strip().lower() for d in disposable_input.replace(',', '\n').split('\n') if d.strip())
@@ -178,7 +225,7 @@ with config_col:
         role_based_input = st.text_area(
             "Add or remove prefixes (comma or newline separated):",
             value=", ".join(DEFAULT_ROLE_BASED_PREFIXES),
-            height=100, # Reduced height
+            height=100,
             key="role_based_prefixes_input"
         )
         role_based_prefixes_set = set(p.strip().lower() for p in role_based_input.replace(',', '\n').split('\n') if p.strip())
@@ -191,13 +238,12 @@ with config_col:
             key="from_email_input",
             help="Example: check@yourdomain.com"
         )
-        if not is_valid_syntax(from_email_input):
+        from_email_valid = is_valid_syntax(from_email_input) # Use the new strict syntax check here too
+        if not from_email_valid:
             st.error("🚨 Invalid 'From' email format. Please correct.")
-            from_email_valid = False
-        else:
-            from_email_valid = True
 
-st.divider() # Visual separation after the top section
+
+st.divider()
 
 # --- Main Email Validator Content ---
 st.subheader("Paste Emails Here")
@@ -209,7 +255,7 @@ user_input = st.text_area(
     key="email_input"
 )
 
-col_btn, col_spacer = st.columns([1, 4]) # Smaller column for button, larger for spacer
+col_btn, col_spacer = st.columns([1, 4])
 
 if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary"):
     if not from_email_valid:
@@ -256,13 +302,14 @@ if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary
                 "❌ Invalid": "🚫",
                 "⚠️ Disposable": "🗑️",
                 "ℹ️ Role-based": "👥",
-                "❌ Invalid Syntax": "📝"
+                "❌ Invalid Syntax": "📝", # New verdict for clarity
+                "❌ Invalid Domain Format": "🌐" # New verdict for clarity
             }
 
             for verdict in sorted(verdict_counts.keys()):
                 count = verdict_counts[verdict]
                 with summary_cols[col_idx % len(summary_cols)]:
-                    st.metric(label=f"{metric_icons.get(verdict, '')} {verdict}", value=count)
+                    st.metric(label=f"{metric_icons.get(verdict, '❓')} {verdict}", value=count)
                 col_idx += 1
 
             st.divider()
@@ -271,7 +318,7 @@ if col_btn.button("✅ Validate Emails", use_container_width=True, type="primary
             st.subheader("Detailed Results & Export")
             
             all_verdicts = df['Verdict'].unique().tolist()
-            filter_options = ["All"] + sorted(all_verdicts) 
+            filter_options = ["All"] + sorted(all_verdicts)
             
             selected_verdict = st.selectbox(
                 "🔍 Filter results by verdict type:", 
