@@ -9,7 +9,7 @@ import whois
 from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
 import tldextract
 import yagmail
-import time # For simulated work/delays
+import time # Used for potential future debugging/simulating delays, not actively used in validation logic speed
 
 # --- Configs ---
 DEFAULT_DISPOSABLE_DOMAINS = {
@@ -273,7 +273,8 @@ with intro_text_col:
     """)
 
 with config_col:
-    with st.expander("⚙️ Configuration Settings", expanded=False):
+    # Changed expanded=False to expanded=True for initial visibility
+    with st.expander("⚙️ Configuration Settings", expanded=True):
         st.info("Adjust the parameters for email validation and sending. Your changes will apply to all subsequent actions.")
         
         st.subheader("SMTP Sender Details")
@@ -376,7 +377,8 @@ with tab_validator:
         key="email_input"
     )
 
-    col_start_btn, col_stop_btn, col_spacer = st.columns([1, 1, 3]) # Added a column for the stop button
+    # Place start and stop buttons side-by-side
+    col_start_btn, col_stop_btn = st.columns([1, 1])
     
     # --- Start Button Logic ---
     if col_start_btn.button("✅ Validate Emails", use_container_width=True, type="primary", disabled=st.session_state.is_validating):
@@ -398,14 +400,13 @@ with tab_validator:
                     st.info(f"✨ Detected and removed **{len(raw_emails) - len(unique_emails)}** duplicate email(s). Processing **{len(unique_emails)}** unique email(s).")
                 emails_to_validate = unique_emails
                 
-                # Using st.empty() to allow dynamically showing/hiding stop button container
-                stop_button_placeholder = st.empty() 
-
-                with st.status(f"Validating {len(emails_to_validate)} email(s)... This might take a moment.", expanded=True) as status_container:
-                    # Display stop button while validating
-                    with stop_button_placeholder.container():
-                        col_stop_btn.button("⏹️ Stop Validation", use_container_width=True, type="secondary", on_click=stop_validation_callback, disabled=not st.session_state.is_validating)
-                        
+                # --- Stop Button inside st.status ---
+                # The stop button will be placed inside the status container for visual association
+                with st.status(f"Validating {len(emails_to_validate)} email(s)... Please wait.", expanded=True) as status_container:
+                    # Place the Stop button directly inside the status container
+                    # This button will be shown only while the status container is active.
+                    st.button("⏹️ Stop Validation", key="status_stop_btn", on_click=stop_validation_callback, help="Click to immediately halt the current validation process.")
+                    
                     progress_bar = st.progress(0, text="Starting validation...")
                     
                     results = []
@@ -414,30 +415,30 @@ with tab_validator:
                     with ThreadPoolExecutor(max_workers=10) as executor:
                         futures = {executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, sender_email_input, enable_company_lookup): email for email in emails_to_validate}
                         
-                        for i, future in enumerate(as_completed(futures)): # Use as_completed for results as they finish
+                        for i, future in enumerate(as_completed(futures)):
                             if st.session_state.stop_validation:
                                 status_container.update(label="Validation Aborted by User!", state="error", expanded=True)
                                 # Cancel remaining futures
                                 for f in futures:
                                     f.cancel()
-                                break # Exit the loop
+                                break
                             
                             results.append(future.result())
                             progress_percent = (i + 1) / total_emails
                             progress_bar.progress(progress_percent, text=f"Processing email {i + 1} of {total_emails}...")
                     
-                    if not st.session_state.stop_validation: # Only show success if not aborted
+                    if not st.session_state.stop_validation:
                         status_container.update(label="Validation Complete!", state="complete", expanded=False)
                     
-                st.session_state.is_validating = False # Reset state after validation attempt
-                st.session_state.stop_validation = False # Reset stop flag
-                stop_button_placeholder.empty() # Clear the stop button after validation/abortion
+                # Reset state variables after validation attempt (either complete or aborted)
+                st.session_state.is_validating = False
+                st.session_state.stop_validation = False 
 
                 # Display results only if some results were collected
                 if results:
                     df = pd.DataFrame(results)
                     
-                    if st.session_state.stop_validation: # If aborted, show partial results
+                    if st.session_state.stop_validation:
                         st.warning("Validation was stopped. Displaying partial results:")
                     else:
                         st.success("🎉 Validation complete! Here are your results:")
@@ -496,9 +497,8 @@ with tab_validator:
                         mime="text/csv",
                         help="Click to download the currently displayed (filtered) validation results as a CSV file. Includes Email, Domain, Company/Org, Validation Flags, Verdict, and Deliverability Score."
                     )
-                else: # If validation was stopped very early and no results collected
+                else:
                     st.info("No results to display. Validation might have been stopped prematurely or no valid emails were found.")
-
 
 # --- Send Test Email Tab Content ---
 with tab_sender:
@@ -516,26 +516,24 @@ with tab_sender:
     test_subject = st.text_input("Subject:", key="test_subject", placeholder="Test Email from Streamlit App")
     test_body = st.text_area("Email Body:", key="test_body", height=150, placeholder="Hello, this is a test email sent from the Streamlit Email Tool!")
 
-    if st.button("🚀 Send Test Email", type="primary"):
-        if not sender_email_input or not sender_password_input:
-            st.error("🚨 Sender Email and Password are required in the Configuration Settings to send emails.")
-        elif not recipient_test_email or not test_subject or not test_body:
-            st.warning("Please fill in all recipient, subject, and body fields to send a test email.")
-        else:
-            with st.spinner("Sending email..."):
-                success, message = send_email_via_yagmail(
-                    sender_email_input, 
-                    sender_password_input, 
-                    recipient_test_email, 
-                    test_subject, 
-                    test_body,
-                    smtp_host_input,
-                    smtp_port_input
-                )
-                if success:
-                    st.success(f"✅ {message}")
-                else:
-                    st.error(f"❌ {message}")
+    # Disable send button if sender email/password are not provided/valid
+    can_send_email = from_email_valid and bool(sender_password_input) and bool(recipient_test_email) and bool(test_subject) and bool(test_body)
+
+    if st.button("🚀 Send Test Email", type="primary", disabled=not can_send_email):
+        with st.spinner("Sending email..."):
+            success, message = send_email_via_yagmail(
+                sender_email_input, 
+                sender_password_input, 
+                recipient_test_email, 
+                test_subject, 
+                test_body,
+                smtp_host_input,
+                smtp_port_input
+            )
+            if success:
+                st.success(f"✅ {message}")
+            else:
+                st.error(f"❌ {message}")
 
 st.divider()
 st.markdown("Developed with ❤️ with Streamlit and community libraries.")
