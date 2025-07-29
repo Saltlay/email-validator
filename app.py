@@ -397,7 +397,7 @@ def generate_email_permutations_raw(first_name, last_name, domain, nickname=None
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Email Validator", page_icon="✅", layout="wide")
-st.title("📧 Comprehensive Email Validator & Sender Tool")
+st.title("📧 Email Validator & Email Permutator")
 
 st.markdown("""
 Welcome to the **Email Validator & Sender Tool**! This application is designed to help you ensure the quality and deliverability of your email lists.
