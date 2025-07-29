@@ -8,7 +8,7 @@ from collections import Counter
 import whois
 from email_validator import validate_email as validate_syntax_strict, EmailNotValidError
 import tldextract
-import yagmail
+import yagmail # New import for email sending
 
 # --- Configs ---
 DEFAULT_DISPOSABLE_DOMAINS = {
@@ -128,14 +128,6 @@ def calculate_deliverability_score(result):
         if not result["SMTP Valid"]:
             score -= 50
     
-    # Only penalize for company info lookup if it was enabled and failed/was private
-    if result["Company/Org"] in ["Private/No Org Info", "Lookup Failed", "N/A (Invalid Syntax)", "N/A (Invalid Domain)"]:
-        # If company lookup was disabled by user, don't penalize.
-        # This requires knowing if it was enabled, which we'll pass to validate_email later.
-        pass # The logic here should consider the 'enable_company_lookup' flag if we want to penalize.
-             # For simplicity, we'll keep it as is, or remove this part of scoring.
-             # Let's remove this score part for now if it's optional and often fails.
-    
     return max(0, score)
 
 # --- Main Checker (Modified) ---
@@ -211,6 +203,8 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
             password=sender_password,
             host=smtp_host if smtp_host else None,
             port=smtp_port if smtp_port else None,
+            # For debugging, uncomment below, but ensure security in production
+            # smtp_debug=True
         )
         yag.send(
             to=recipient_email,
@@ -218,14 +212,17 @@ def send_email_via_yagmail(sender_email, sender_password, recipient_email, subje
             contents=body
         )
         return True, "Email sent successfully!"
-    except yagmail.YagmailError as e:
-        if "SMTPAuthenticationError" in str(e):
-            return False, f"Authentication failed. Check your sender email and password (or App Password for Gmail). Error: {e}"
-        elif "SMTPConnectError" in str(e):
-            return False, f"Could not connect to SMTP server. Check host/port or internet connection. Error: {e}"
-        return False, f"Failed to send email: {e}"
-    except Exception as e:
-        return False, f"An unexpected error occurred: {e}"
+    # The change is here: Catching the broader Exception first to get more details
+    except Exception as e: # Changed from yagmail.YagmailError
+        # You can inspect 'e' to see if it's a specific YagmailError subclass
+        # or a different type of error.
+        error_message = str(e)
+        if "SMTPAuthenticationError" in error_message:
+            return False, f"Authentication failed. Check your sender email and password (or App Password for Gmail). Error: {error_message}"
+        elif "SMTPConnectError" in error_message:
+            return False, f"Could not connect to SMTP server. Check host/port or internet connection. Error: {error_message}"
+        # Fallback for any other unexpected errors
+        return False, f"Failed to send email: An unexpected error occurred: {error_message}"
 
 
 # --- Streamlit UI ---
@@ -266,8 +263,6 @@ with intro_text_col:
     
     **Important:** Please review and set up your **Configuration Settings** in the expander on the right. This includes your sender email and password, which are crucial for SMTP checks and sending test emails.
     """)
-    # The WHOIS warning is now more specific within the config/email validator sections.
-    # Removed general warning here to avoid redundancy.
 
 with config_col:
     with st.expander("⚙️ Configuration Settings", expanded=False):
@@ -314,7 +309,7 @@ with config_col:
         enable_company_lookup = st.checkbox(
             "Enable Company/Organization Lookup (WHOIS)",
             value=True, # Default to on
-            help="Toggle this to enable/disable retrieving company information via WHOIS. Disable if you find results are consistently 'Private' or 'N/A' to speed up validation."
+            help="Toggle this to enable/disable retrieving company information via WHOIS. Disable if you find results are consistently 'Private' or 'N/A' or if it significantly slows down validation."
         )
         if not enable_company_lookup:
             st.info("Company/Organization Lookup is currently disabled. The 'Company/Org' column will show 'Lookup Disabled'.")
