@@ -905,4 +905,3 @@ with tab_permutator:
 st.write("") # Add some final vertical space
 st.divider()
 st.markdown("Developed with ❤️ with Streamlit and community libraries.")
-```
