@@ -4,6 +4,8 @@ import dns.resolver
 import pandas as pd
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
+import whois # New import for WHOIS lookup
 
 # --- Configs ---
 # Default values for configuration, now editable in UI
@@ -14,10 +16,11 @@ DEFAULT_DISPOSABLE_DOMAINS = {
 DEFAULT_ROLE_BASED_PREFIXES = {
     "admin", "support", "info", "sales", "contact", "webmaster", "help"
 }
-DEFAULT_FROM_EMAIL = "check@yourdomain.com"  # Replace with a real domain you own
+FROM_EMAIL = "check@yourdomain.com" # Default, can be overridden by user input
 
 # DNS MX caching
 mx_cache = {}
+whois_cache = {} # Cache for WHOIS results
 
 # --- Validators ---
 def is_valid_syntax(email):
@@ -35,7 +38,7 @@ def has_mx_record(domain):
     if domain in mx_cache:
         return mx_cache[domain]
     try:
-        answers = dns.resolver.resolve(domain, 'MX', lifetime=3)
+        answers = dns.resolver.resolve(domain, 'MX', 'IN', lifetime=3)
         mx_cache[domain] = len(answers) > 0
         return mx_cache[domain]
     except Exception:
@@ -45,8 +48,9 @@ def has_mx_record(domain):
 def verify_smtp(email, from_email):
     try:
         domain = email.split('@')[1]
-        mx_records = dns.resolver.resolve(domain, 'MX', lifetime=3)
-        mx = str(mx_records[0].exchange)
+        mx_records = dns.resolver.resolve(domain, 'MX', 'IN', lifetime=3)
+        mx_records_sorted = sorted(mx_records, key=lambda r: r.preference)
+        mx = str(mx_records_sorted[0].exchange).rstrip('.') # Ensure MX record is canonical
 
         server = smtplib.SMTP(mx, timeout=5)
         server.helo(from_email.split('@')[1]) # Use the domain from FROM_EMAIL
@@ -57,11 +61,39 @@ def verify_smtp(email, from_email):
     except Exception:
         return False
 
-# --- Main Checker ---
+# --- New Function: Get Domain Info ---
+def get_domain_info(domain):
+    if domain in whois_cache:
+        return whois_cache[domain]
+    
+    company_name = "N/A"
+    
+    try:
+        w = whois.whois(domain)
+        # Prioritize 'organization', then 'registrant_organization', then 'name'
+        if w and w.organization:
+            company_name = w.organization
+        elif w and w.registrant_organization:
+            company_name = w.registrant_organization
+        elif w and w.name: # This might be the individual's name if not a company
+            company_name = w.name
+        
+    except Exception:
+        # Handle cases where WHOIS lookup fails or domain is invalid/private
+        company_name = "Private/Not Found"
+        
+    whois_cache[domain] = company_name
+    return company_name
+
+# --- Main Checker (Modified) ---
 def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     email = email.strip()
+    domain = email.split('@')[1] # Extract domain early
+
     result = {
         "Email": email,
+        "Domain": domain, # New field
+        "Company/Org": "Looking up...", # New field, will be updated
         "Syntax Valid": False,
         "MX Record": False,
         "Disposable": False,
@@ -71,24 +103,33 @@ def validate_email(email, disposable_domains, role_based_prefixes, from_email):
     }
 
     if not is_valid_syntax(email):
+        result["Company/Org"] = "N/A (Invalid Syntax)"
         return result
     result["Syntax Valid"] = True
+
+    # Perform WHOIS lookup concurrently with other checks if possible, or before/after
+    # For simplicity, we'll do it sequentially for each email in validate_email for now.
+    # If performance is an issue for very large lists, consider a separate ThreadPool for WHOIS.
+    result["Company/Org"] = get_domain_info(domain)
 
     result["Disposable"] = is_disposable(email, disposable_domains)
     result["Role-based"] = is_role_based(email, role_based_prefixes)
 
-    domain = email.split('@')[1]
     result["MX Record"] = has_mx_record(domain)
 
-    if result["MX Record"]:
+    if result["MX Record"] and not result["Disposable"]: # Only attempt SMTP for non-disposable and with MX
         result["SMTP Valid"] = verify_smtp(email, from_email)
-
-    if all([result["Syntax Valid"], result["MX Record"], result["SMTP Valid"]]) and not result["Disposable"]:
-        result["Verdict"] = "✅ Valid"
-    elif result["Disposable"]:
+    
+    # Final Verdict Logic
+    if result["Disposable"]:
         result["Verdict"] = "⚠️ Disposable"
     elif result["Role-based"]:
         result["Verdict"] = "ℹ️ Role-based"
+    elif all([result["Syntax Valid"], result["MX Record"], result["SMTP Valid"]]):
+        result["Verdict"] = "✅ Valid"
+    else:
+        result["Verdict"] = "❌ Invalid"
+
     return result
 
 # --- Streamlit UI ---
@@ -107,7 +148,7 @@ tab1, tab2 = st.tabs(["✉️ Email Validator", "⚙️ Configuration"])
 # --- Configuration Tab Content ---
 with tab2:
     st.header("⚙️ Configuration Settings")
-    st.info("Customize the lists of disposable domains, role-based prefixes, and the 'From' email address for SMTP checks.")
+    st.info("Customize the lists of disposable domains, role-based prefixes, and the 'From' email address for SMTP checks. Changes here will apply to new validations.")
     
     col1_config, col2_config = st.columns(2)
 
@@ -131,7 +172,7 @@ with tab2:
 
     from_email_input = st.text_input(
         "SMTP 'From' Email Address (e.g., check@yourdomain.com)",
-        value=DEFAULT_FROM_EMAIL,
+        value=FROM_EMAIL, # Use the global FROM_EMAIL default
         key="from_email_input" # Added key for uniqueness
     )
     if not is_valid_syntax(from_email_input):
@@ -144,6 +185,7 @@ with tab2:
 with tab1:
     st.header("✉️ Validate Your Emails")
     st.write("Input one or more email addresses below. Separate them with commas or newlines.")
+    st.warning("Please note: Retrieving 'Company/Org' details relies on public WHOIS data, which can be limited, private, or not always accurate for all domains.")
 
     user_input = st.text_area(
         "Emails to Validate",
@@ -159,39 +201,78 @@ with tab1:
         if not from_email_valid:
             message_col.error("Cannot proceed: The 'From' email address is invalid. Please correct it in the **Configuration** tab.")
         else:
-            emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
-            if not emails:
+            raw_emails = [e.strip() for e in user_input.replace(',', '\n').split('\n') if e.strip()]
+            
+            if not raw_emails:
                 message_col.warning("Please enter at least one email address to validate.")
             else:
-                message_col.info(f"Processing {len(emails)} email(s)...")
+                # --- Deduplication ---
+                unique_emails = list(set(raw_emails))
+                if len(raw_emails) != len(unique_emails):
+                    st.info(f"Removed {len(raw_emails) - len(unique_emails)} duplicate email(s). Validating {len(unique_emails)} unique email(s).")
+                emails_to_validate = unique_emails
+                
+                message_col.info(f"Processing {len(emails_to_validate)} unique email(s)... This may take some time due to WHOIS lookups.")
                 progress_bar = st.progress(0)
                 status_text = st.empty()
 
                 results = []
-                total_emails = len(emails)
+                total_emails = len(emails_to_validate)
 
                 # Pass the dynamically updated configuration to the validation function
                 with ThreadPoolExecutor(max_workers=10) as executor:
-                    futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, from_email_input) for email in emails]
+                    futures = [executor.submit(validate_email, email, disposable_domains_set, role_based_prefixes_set, from_email_input) for email in emails_to_validate]
                     for i, future in enumerate(futures):
                         results.append(future.result())
                         progress_bar.progress((i + 1) / total_emails)
-                        status_text.text(f"Validated {i + 1} of {total_emails} emails.")
+                        status_text.text(f"Validated {i + 1} of {total_emails} emails. Getting company info...")
                 
                 progress_bar.empty() # Clear the progress bar after completion
                 status_text.empty() # Clear the status text after completion
 
                 df = pd.DataFrame(results)
+                
                 st.success("🎉 Validation complete! See results below:")
-                st.dataframe(df, use_container_width=True) # Make dataframe span full width
 
-                csv = df.to_csv(index=False).encode('utf-8')
+                # --- Summary Statistics ---
+                st.subheader("📊 Validation Summary")
+                verdict_counts = Counter(df['Verdict'])
+                
+                summary_cols = st.columns(len(verdict_counts) if len(verdict_counts) > 0 else 1)
+                col_idx = 0
+                for verdict, count in verdict_counts.items():
+                    with summary_cols[col_idx]:
+                        if verdict == "✅ Valid":
+                            st.metric(label=verdict, value=count, delta_color="normal")
+                        elif verdict == "❌ Invalid":
+                            st.metric(label=verdict, value=count, delta_color="inverse")
+                        else:
+                            st.metric(label=verdict, value=count)
+                    col_idx = (col_idx + 1) % len(summary_cols) # Cycle through columns if many verdicts
+
+                # --- Filtering Results ---
+                st.subheader("Detailed Results")
+                
+                # Get all unique verdicts for filtering options
+                all_verdicts = df['Verdict'].unique().tolist()
+                
+                # Add "All" option to filter
+                filter_options = ["All"] + sorted(all_verdicts) 
+                selected_verdict = st.selectbox("Filter results by Verdict:", filter_options)
+
+                filtered_df = df
+                if selected_verdict != "All":
+                    filtered_df = df[df['Verdict'] == selected_verdict]
+
+                st.dataframe(filtered_df, use_container_width=True) # Make dataframe span full width
+
+                csv = filtered_df.to_csv(index=False).encode('utf-8') # Export filtered data
                 st.download_button(
-                    "📥 Download Results as CSV",
+                    "📥 Download Filtered Results as CSV",
                     data=csv,
                     file_name="email_validation_results.csv",
                     mime="text/csv",
-                    help="Click to download the validation results as a CSV file."
+                    help="Click to download the currently displayed (filtered) validation results as a CSV file."
                 )
 
 st.write("---")
